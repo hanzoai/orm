@@ -1,0 +1,269 @@
+// Package db provides a multi-layer database abstraction supporting:
+// - User-level SQLite with sqlite-vec for personal data and vector search
+// - Organization-level SQLite for shared tenant data
+// - PostgreSQL with pgvector for scalable deployments
+// - MongoDB/FerretDB for document storage
+// - Hanzo Datastore (ClickHouse) for deep analytics
+package db
+
+import (
+	"context"
+	"errors"
+	"time"
+)
+
+var (
+	// ErrNoSuchEntity is returned when an entity is not found.
+	ErrNoSuchEntity = errors.New("db: no such entity")
+
+	// ErrInvalidKey is returned when a key is invalid.
+	ErrInvalidKey = errors.New("db: invalid key")
+
+	// ErrInvalidEntityType is returned when an entity type is invalid.
+	ErrInvalidEntityType = errors.New("db: invalid entity type")
+
+	// ErrConcurrentModification is returned when optimistic locking fails.
+	ErrConcurrentModification = errors.New("db: concurrent modification")
+
+	// ErrDatabaseClosed is returned when operating on a closed database.
+	ErrDatabaseClosed = errors.New("db: database closed")
+
+	// ErrValidationFailed is returned when entity validation fails.
+	ErrValidationFailed = errors.New("db: validation failed")
+
+	// ErrEntityNotFound aliases ErrNoSuchEntity.
+	ErrEntityNotFound = ErrNoSuchEntity
+)
+
+// Layer represents which database layer to use.
+type Layer int
+
+const (
+	LayerUser      Layer = iota // User-specific SQLite database
+	LayerOrg                    // Organization-level SQLite database
+	LayerDatastore              // Hanzo Datastore (ClickHouse) for analytics
+	LayerAll                    // Query all layers
+)
+
+// Config holds database configuration options.
+type Config struct {
+	DataDir            string
+	UserDataDir        string
+	OrgDataDir         string
+	DatastoreDSN       string
+	EnableDatastore    bool
+	EnableVectorSearch bool
+	VectorDimensions   int
+	SQLite             SQLiteConfig
+	Datastore          DatastoreConfig
+	IsDev              bool
+}
+
+// SQLiteConfig holds SQLite-specific configuration.
+type SQLiteConfig struct {
+	MaxOpenConns int
+	MaxIdleConns int
+	BusyTimeout  int
+	JournalMode  string
+	Synchronous  string
+	CacheSize    int
+	QueryTimeout time.Duration
+}
+
+// DatastoreConfig holds Hanzo Datastore (ClickHouse) configuration.
+type DatastoreConfig struct {
+	MaxOpenConns    int
+	MaxIdleConns    int
+	ConnMaxLifetime time.Duration
+	Compression     string
+	QueryTimeout    time.Duration
+}
+
+// DefaultConfig returns a default configuration.
+func DefaultConfig() *Config {
+	return &Config{
+		DataDir:            "./data",
+		EnableDatastore:    false,
+		EnableVectorSearch: true,
+		VectorDimensions:   1536,
+		SQLite: SQLiteConfig{
+			MaxOpenConns: 120,
+			MaxIdleConns: 15,
+			BusyTimeout:  10000,
+			JournalMode:  "WAL",
+			Synchronous:  "NORMAL",
+			CacheSize:    -16000,
+			QueryTimeout: 30 * time.Second,
+		},
+		Datastore: DatastoreConfig{
+			MaxOpenConns:    25,
+			MaxIdleConns:    5,
+			ConnMaxLifetime: time.Hour,
+			Compression:     "lz4",
+			QueryTimeout:    60 * time.Second,
+		},
+		IsDev: false,
+	}
+}
+
+// DB is the main database interface for entity storage.
+type DB interface {
+	// Core operations
+	Get(ctx context.Context, key Key, dst interface{}) error
+	Put(ctx context.Context, key Key, src interface{}) (Key, error)
+	Delete(ctx context.Context, key Key) error
+
+	// Batch operations
+	GetMulti(ctx context.Context, keys []Key, dst interface{}) error
+	PutMulti(ctx context.Context, keys []Key, src interface{}) ([]Key, error)
+	DeleteMulti(ctx context.Context, keys []Key) error
+
+	// Query
+	Query(kind string) Query
+
+	// Vector search
+	VectorSearch(ctx context.Context, opts *VectorSearchOptions) ([]VectorResult, error)
+	PutVector(ctx context.Context, kind string, id string, vector []float32, metadata map[string]interface{}) error
+
+	// Key management
+	NewKey(kind string, stringID string, intID int64, parent Key) Key
+	NewIncompleteKey(kind string, parent Key) Key
+	AllocateIDs(kind string, parent Key, n int) ([]Key, error)
+
+	// Transactions
+	RunInTransaction(ctx context.Context, fn func(tx Transaction) error, opts *TransactionOptions) error
+
+	// Lifecycle
+	Close() error
+
+	// Tenant info
+	TenantID() string
+	TenantType() string
+}
+
+// AnalyticsStore is the interface for analytics queries (e.g. ClickHouse).
+type AnalyticsStore interface {
+	Query(ctx context.Context, query string, args ...interface{}) (AnalyticsRows, error)
+	Select(ctx context.Context, dest interface{}, query string, args ...interface{}) error
+	Exec(ctx context.Context, query string, args ...interface{}) error
+	PrepareBatch(ctx context.Context, query string) (AnalyticsBatch, error)
+	AsyncInsert(ctx context.Context, query string, wait bool, args ...interface{}) error
+	Close() error
+}
+
+// AnalyticsRows represents analytics query results.
+type AnalyticsRows interface {
+	Next() bool
+	Scan(dest ...interface{}) error
+	ScanStruct(dest interface{}) error
+	Columns() []string
+	Close() error
+	Err() error
+}
+
+// AnalyticsBatch for bulk inserts into analytics store.
+type AnalyticsBatch interface {
+	Append(v ...interface{}) error
+	AppendStruct(v interface{}) error
+	Flush() error
+	Send() error
+	Abort() error
+	Rows() int
+	Close() error
+}
+
+// VectorSearchOptions configures vector similarity search.
+type VectorSearchOptions struct {
+	Kind     string
+	Vector   []float32
+	Limit    int
+	MinScore float32
+	Filters  map[string]interface{}
+}
+
+// VectorResult represents a vector search result.
+type VectorResult struct {
+	ID       string
+	Score    float32
+	Metadata map[string]interface{}
+}
+
+// Transaction represents a database transaction.
+type Transaction interface {
+	Get(key Key, dst interface{}) error
+	Put(key Key, src interface{}) (Key, error)
+	Delete(key Key) error
+	Query(kind string) Query
+}
+
+// TransactionOptions configures transaction behavior.
+type TransactionOptions struct {
+	ReadOnly    bool
+	MaxAttempts int
+	Isolation   IsolationLevel
+}
+
+// IsolationLevel represents transaction isolation levels.
+type IsolationLevel int
+
+const (
+	IsolationDefault IsolationLevel = iota
+	IsolationReadUncommitted
+	IsolationReadCommitted
+	IsolationRepeatableRead
+	IsolationSerializable
+)
+
+// Key represents a unique identifier for an entity.
+type Key interface {
+	Kind() string
+	StringID() string
+	IntID() int64
+	Parent() Key
+	Namespace() string
+	Incomplete() bool
+	Encode() string
+	Equal(other Key) bool
+}
+
+// Query provides a fluent interface for querying entities.
+type Query interface {
+	Filter(filterStr string, value interface{}) Query
+	FilterField(fieldPath string, op string, value interface{}) Query
+	Order(fieldPath string) Query
+	OrderDesc(fieldPath string) Query
+	Limit(limit int) Query
+	Offset(offset int) Query
+	Project(fieldNames ...string) Query
+	Distinct() Query
+	Ancestor(ancestor Key) Query
+	GetAll(ctx context.Context, dst interface{}) ([]Key, error)
+	First(ctx context.Context, dst interface{}) (Key, error)
+	Count(ctx context.Context) (int, error)
+	Keys(ctx context.Context) ([]Key, error)
+	Run(ctx context.Context) Iterator
+	Start(cursor Cursor) Query
+	End(cursor Cursor) Query
+}
+
+// Iterator allows iterating over query results.
+type Iterator interface {
+	Next(dst interface{}) (Key, error)
+	Cursor() (Cursor, error)
+}
+
+// Cursor represents a position in a result set.
+type Cursor interface {
+	String() string
+}
+
+// Entity is the interface that all model entities should implement.
+type Entity interface {
+	Kind() string
+}
+
+// Syncable entities can be synced to analytics store.
+type Syncable interface {
+	Entity
+	SyncToDatastore() bool
+}
