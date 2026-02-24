@@ -1,6 +1,10 @@
 package orm
 
-import "reflect"
+import (
+	"encoding/json"
+	"fmt"
+	"reflect"
+)
 
 // New creates a new instance of T, wired to db, with defaults applied.
 // This replaces the per-model New() function and model.go boilerplate.
@@ -41,6 +45,75 @@ func Get[T any](db DB, id string) (*T, error) {
 	}
 
 	return entity, nil
+}
+
+// MustGet retrieves an entity by ID or panics.
+func MustGet[T any](db DB, id string) *T {
+	entity, err := Get[T](db, id)
+	if err != nil {
+		panic(fmt.Sprintf("orm: MustGet: %v", err))
+	}
+	return entity
+}
+
+// GetOrCreate retrieves an entity by ID, or creates it with defaults if not found.
+// Returns (entity, created, error).
+func GetOrCreate[T any](db DB, id string, defaults func(*T)) (*T, bool, error) {
+	entity, err := Get[T](db, id)
+	if err == nil {
+		return entity, false, nil
+	}
+	if err != ErrNotFound {
+		return nil, false, err
+	}
+
+	// Not found — create
+	entity = New[T](db)
+	m := getModel[T](entity)
+	if m != nil {
+		m.SetId(id)
+	}
+	if defaults != nil {
+		defaults(entity)
+	}
+	if m != nil {
+		if err := m.Create(); err != nil {
+			return nil, false, err
+		}
+	}
+	return entity, true, nil
+}
+
+// GetOrUpdate retrieves an entity by ID, applies fn, and updates it.
+func GetOrUpdate[T any](db DB, id string, fn func(*T)) (*T, error) {
+	entity, err := Get[T](db, id)
+	if err != nil {
+		return nil, err
+	}
+	if fn != nil {
+		fn(entity)
+	}
+	m := getModel[T](entity)
+	if m != nil {
+		if err := m.Update(); err != nil {
+			return nil, err
+		}
+	}
+	return entity, nil
+}
+
+// CloneFromJSON creates a new T from JSON data.
+func CloneFromJSON[T any](data []byte) (*T, error) {
+	entity := new(T)
+	if err := json.Unmarshal(data, entity); err != nil {
+		return nil, fmt.Errorf("orm: CloneFromJSON: %w", err)
+	}
+	return entity, nil
+}
+
+// Zero returns a new zero-value instance of T (not wired to any DB).
+func Zero[T any]() *T {
+	return new(T)
 }
 
 // TypedQuery returns a new query builder for type T.
