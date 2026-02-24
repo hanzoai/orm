@@ -6,7 +6,7 @@ Generics-based ORM for Go, extracted from `hanzoai/commerce`. Replaces 112 model
 
 **Module**: `github.com/hanzoai/orm`
 **Go version**: 1.26.0
-**Dependencies**: `go-sqlite3`, `kv-go/v9` (Valkey/Redis cache)
+**Dependencies**: `go-sqlite3`, `kv-go/v9` (Valkey/Redis cache), `luxfi/zap` (binary protocol)
 
 ## Package Layout
 
@@ -22,7 +22,7 @@ orm/
 ├── options.go          WithParent, WithInit, WithDefaults, WithStringKey, WithCache
 ├── errors.go           ErrNotFound, ErrAlreadyRegistered
 ├── db.go               orm.DB, orm.Key, orm.Query, orm.Iterator interfaces
-├── adapter.go          OpenSQLite, AdaptDB — bridges db.SQLiteDB → orm.DB
+├── adapter.go          OpenSQLite, OpenZap, AdaptDB — bridges db backends → orm.DB
 ├── compat.go           LegacyKind, LegacyEntity for commerce migration period
 ├── cache.go            Cache interface, EntityCacheKey, QueryCacheKey, HashQuery
 ├── cache_memory.go     In-memory LRU cache with TTL
@@ -33,6 +33,7 @@ orm/
 │   ├── sqlite.go       SQLite driver (WAL, JSON storage, json_extract filters, sqlite-vec)
 │   ├── query.go        ParseFilterString, NormalizeOp, ToJSONFieldName, GenerateID
 │   ├── model.go        db.Model base type (non-generic, with hooks and CRUD lifecycle)
+│   ├── zap.go          ZAP binary protocol driver (SQL/DocumentDB/KV/Datastore via sidecar)
 │   ├── manager.go      Multi-tenant Manager (RegisterUserDB/RegisterOrgDB)
 │   └── time.go         Testable timeNow var
 ├── val/                Validation
@@ -117,10 +118,15 @@ user.Create()
 got, err := orm.Get[User](db, user.Id())
 ```
 
+### ZAP Binary Protocol Driver
+- `db/zap.go` implements db.DB over ZAP binary protocol (luxfi/zap)
+- Communicates with zap-sidecar process that proxies to real databases
+- Supports 4 backends: ZapSQL (PostgreSQL), ZapDocumentDB (MongoDB/FerretDB), ZapKV (Redis/Valkey), ZapDatastore (ClickHouse)
+- Binary encoding eliminates JSON serialization overhead for storage operations
+- Query builder generates SQL/MongoDB filters depending on backend type
+- `adapter.go` exposes `OpenZap(*ZapConfig)` convenience constructor
+
 ## Remaining Work
 
-- PostgreSQL driver (commerce/db/postgres.go → orm/db/postgres.go)
-- MongoDB driver (commerce/db/mongo.go → orm/db/mongo.go)
 - Hashid encoding (commerce/util/hashid → orm/datastore/key/hashid)
-- Commerce datastore wrapper (ClickHouse analytics)
 - Migrate commerce models in waves (30 simple → 60 medium → 12 complex)

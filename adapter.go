@@ -15,6 +15,17 @@ func OpenSQLite(cfg *ormdb.SQLiteDBConfig) (DB, error) {
 	return &dbAdapter{db: sdb}, nil
 }
 
+// OpenZap creates an orm.DB backed by ZAP binary protocol.
+// Connects to a zap-sidecar and uses Cap'n Proto transport,
+// eliminating JSON serialization overhead for storage operations.
+func OpenZap(cfg *ormdb.ZapConfig) (DB, error) {
+	zdb, err := ormdb.NewZapDB(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &dbAdapter{db: zdb}, nil
+}
+
 // AdaptDB wraps any db.DB to satisfy the root orm.DB interface.
 func AdaptDB(d ormdb.DB) DB {
 	return &dbAdapter{db: d}
