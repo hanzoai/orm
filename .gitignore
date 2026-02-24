@@ -1,0 +1,9 @@
+*.out
+*.test
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.DS_Store
+/data/
+/tmp/
