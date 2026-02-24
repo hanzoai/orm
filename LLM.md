@@ -67,13 +67,39 @@ orm/
 - SerializeFields: marshals Foo → sets Foo_ (string) before Put
 - DeserializeFields: unmarshals Foo_ → sets Foo after Get
 
+### Namespace / Multi-Tenant
+- `Model[T]` has `namespace` field with `SetNamespace(ns)`/`Namespace()` methods
+- Namespace flows to cache keys via `EntityCacheKey(namespace, kind, id)`
+- SQLite driver sets namespace from `TenantID` on allocated keys
+- Commerce multi-tenant: each user/org DB is a separate SQLite file
+
+### Context Propagation
+- All CRUD methods have context variants: `CreateCtx(ctx)`, `UpdateCtx(ctx)`, `DeleteCtx(ctx)`, `PutCtx(ctx)`
+- No-arg methods delegate to `*Ctx(context.Background())`
+- Context threaded through to `db.DB` calls
+
+### Old-Entity Hooks (Snapshot)
+- `Model[T]` captures JSON snapshot on every DB load (Get, GetById, Create, Put)
+- `Update()` passes old entity (from snapshot) to `BeforeUpdater[T]`/`AfterUpdater[T]` hooks
+- Enables diffing old vs new state without extra DB read
+
+### Convenience Methods
+- `MustCreate()`, `MustUpdate()`, `MustDelete()` — panic on error
+- `MustGet[T](db, id)` — panic on error
+- `GetOrCreate[T](db, id, defaults)` — returns (entity, created, error)
+- `GetOrUpdate[T](db, id, fn)` — get + apply fn + update
+- `CloneFromJSON[T](data)` — unmarshal JSON into new instance
+- `Zero[T]()` — new zero-value instance (no DB)
+- `ModelQuery[T].First()` — first result or ErrNotFound
+- `ModelQuery[T].GetAll(ctx)` — all matching entities as `[]*T`
+- `ModelQuery[T].Count(ctx)` — count matching entities
+
 ## Test Summary
 
-105 tests across 4 packages:
-- `orm`: 72 tests (core Model[T], cache, registry, defaults, hooks, serialization, 9 SQLite integration)
+130 tests across 4 packages:
+- `orm`: 97 tests (core Model[T], cache, registry, defaults, hooks, serialization, namespace, context, Must*, GetOrCreate, snapshot, 9 SQLite integration)
 - `orm/db`: 21 tests (SQLite CRUD, queries, filters, transactions, batch ops, keys)
 - `orm/val`: 11 tests (validation rules, error types, password validation)
-- Coverage: orm 70.5%, db 36.3%, val 89.9%
 
 ## Development
 

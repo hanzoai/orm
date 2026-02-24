@@ -1,5 +1,7 @@
 package orm
 
+import "context"
+
 // ModelQuery is a typed query wrapper for a single model type.
 // It provides a fluent interface for filtering, ordering, and retrieving entities.
 type ModelQuery[T any] struct {
@@ -50,6 +52,7 @@ func (q *ModelQuery[T]) Get() (bool, error) {
 
 	q.model.SetKey(key)
 	q.model.Init(q.model.db)
+	q.model.captureSnapshot()
 
 	// Auto-deserialize
 	if err := DeserializeFields(entity); err != nil {
@@ -57,6 +60,67 @@ func (q *ModelQuery[T]) Get() (bool, error) {
 	}
 
 	return true, nil
+}
+
+// First returns the first matching entity as a new instance, or ErrNotFound.
+func (q *ModelQuery[T]) First() (*T, error) {
+	entity := New[T](q.model.db)
+	m := getModel[T](entity)
+	if m == nil {
+		return nil, ErrNotFound
+	}
+
+	key, ok, err := q.query.First(entity)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, ErrNotFound
+	}
+
+	m.SetKey(key)
+	m.Init(q.model.db)
+	m.captureSnapshot()
+
+	if err := DeserializeFields(entity); err != nil {
+		return nil, err
+	}
+
+	return entity, nil
+}
+
+// GetAll returns all matching entities.
+func (q *ModelQuery[T]) GetAll(ctx context.Context) ([]*T, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	var items []*T
+	keys, err := q.query.GetAll(ctx, &items)
+	if err != nil {
+		return nil, err
+	}
+
+	// Wire up each entity
+	for i, entity := range items {
+		m := getModel[T](entity)
+		if m != nil && i < len(keys) {
+			m.SetKey(keys[i])
+			m.Init(q.model.db)
+			m.captureSnapshot()
+			DeserializeFields(entity)
+		}
+	}
+
+	return items, nil
+}
+
+// Count returns the number of matching entities.
+func (q *ModelQuery[T]) Count(ctx context.Context) (int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return q.query.Count(ctx)
 }
 
 // ById retrieves an entity by its string ID.
@@ -72,6 +136,7 @@ func (q *ModelQuery[T]) ById(id string) (bool, error) {
 
 	q.model.SetKey(key)
 	q.model.Init(q.model.db)
+	q.model.captureSnapshot()
 
 	if err := DeserializeFields(entity); err != nil {
 		return true, err
