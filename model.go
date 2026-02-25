@@ -61,7 +61,7 @@ func (m *Model[T]) SetNamespace(ns string) {
 }
 
 // Kind returns the registered kind string for T.
-func (m *Model[T]) Kind() string {
+func (m Model[T]) Kind() string {
 	var zero T
 	typ := reflect.TypeOf(zero)
 	if typ.Kind() == reflect.Ptr {
