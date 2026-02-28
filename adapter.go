@@ -26,6 +26,18 @@ func OpenZap(cfg *ormdb.ZapConfig) (DB, error) {
 	return &dbAdapter{db: zdb}, nil
 }
 
+// OpenSQL creates an orm.DB backed by SQL (PostgreSQL via pgx).
+func OpenSQL(cfg *ormdb.SQLConfig) (DB, error) {
+	sdb, err := ormdb.NewSQLDB(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &dbAdapter{db: sdb}, nil
+}
+
+// OpenPostgres is an alias for OpenSQL (backward compatibility).
+var OpenPostgres = OpenSQL
+
 // AdaptDB wraps any db.DB to satisfy the root orm.DB interface.
 func AdaptDB(d ormdb.DB) DB {
 	return &dbAdapter{db: d}
