@@ -16,8 +16,8 @@ func OpenSQLite(cfg *ormdb.SQLiteDBConfig) (DB, error) {
 }
 
 // OpenZap creates an orm.DB backed by ZAP binary protocol.
-// Connects to a zap-sidecar and uses Cap'n Proto transport,
-// eliminating JSON serialization overhead for storage operations.
+// Connects directly to a ZAP-native backend (hanzo/sql, hanzo/kv,
+// hanzo/datastore, or hanzo/documentdb). No sidecar needed.
 func OpenZap(cfg *ormdb.ZapConfig) (DB, error) {
 	zdb, err := ormdb.NewZapDB(cfg)
 	if err != nil {
@@ -37,6 +37,26 @@ func OpenSQL(cfg *ormdb.SQLConfig) (DB, error) {
 
 // OpenPostgres is an alias for OpenSQL (backward compatibility).
 var OpenPostgres = OpenSQL
+
+// OpenDocumentDB creates an orm.DB backed by ZAP to hanzo/documentdb.
+// For clients who prefer MongoDB-style document semantics.
+// Data is stored in hanzo/sql (PostgreSQL) but accessed via document operations.
+func OpenDocumentDB(cfg *ormdb.ZapConfig) (DB, error) {
+	cfg.Backend = ormdb.ZapDocumentDB
+	return OpenZap(cfg)
+}
+
+// OpenKV creates an orm.DB backed by ZAP to hanzo/kv (Valkey).
+func OpenKV(cfg *ormdb.ZapConfig) (DB, error) {
+	cfg.Backend = ormdb.ZapKV
+	return OpenZap(cfg)
+}
+
+// OpenDatastore creates an orm.DB backed by ZAP to hanzo/datastore (ClickHouse).
+func OpenDatastore(cfg *ormdb.ZapConfig) (DB, error) {
+	cfg.Backend = ormdb.ZapDatastore
+	return OpenZap(cfg)
+}
 
 // AdaptDB wraps any db.DB to satisfy the root orm.DB interface.
 func AdaptDB(d ormdb.DB) DB {

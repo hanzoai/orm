@@ -1,10 +1,11 @@
 // ZAP protocol driver for the ORM.
 //
 // ZAP (Zero-Copy App Proto) uses binary encoding over RPC, communicating
-// with zap-sidecar backends (SQL, KV, Datastore, DocumentDB). Structs are
-// encoded directly into the ZAP binary format — no JSON serialization step
-// for storage fields. Complex types (slices, maps, nested structs) are
-// transmitted natively, eliminating the need for Foo/Foo_ field pairs.
+// directly with ZAP-native backends (hanzo/sql, hanzo/kv, hanzo/datastore,
+// hanzo/documentdb). Each backend speaks ZAP natively — no sidecar needed.
+// Structs are encoded directly into the ZAP binary format — no JSON
+// serialization step for storage fields. Complex types (slices, maps,
+// nested structs) are transmitted natively.
 package db
 
 import (
@@ -19,21 +20,31 @@ import (
 	"github.com/luxfi/zap"
 )
 
-// ZapBackend selects which zap-sidecar proxy to target.
+// ZapBackend selects which ZAP-native backend to connect to.
 type ZapBackend int
 
 const (
-	// ZapSQL targets the SQL proxy (PostgreSQL via pgx).
+	// ZapSQL connects to hanzo/sql (PostgreSQL fork) on port 9651.
 	ZapSQL ZapBackend = iota
-	// ZapDocumentDB targets the DocumentDB proxy (MongoDB/FerretDB).
+	// ZapDocumentDB connects to hanzo/documentdb (FerretDB fork) on port 9654.
+	// Provides MongoDB-style document semantics over PostgreSQL storage.
+	// Clients who "think mongo" use this; data lives in hanzo/sql.
 	ZapDocumentDB
-	// ZapKV targets the KV proxy (Redis/Valkey).
+	// ZapKV connects to hanzo/kv (Valkey fork) on port 9653.
 	ZapKV
-	// ZapDatastore targets the Datastore proxy (ClickHouse).
+	// ZapDatastore connects to hanzo/datastore (ClickHouse fork) on port 9655.
 	ZapDatastore
 )
 
-// ZAP message type IDs (matching zap-sidecar constants).
+// DefaultPorts for each ZAP-native backend.
+var DefaultPorts = map[ZapBackend]int{
+	ZapSQL:        9651,
+	ZapKV:         9653,
+	ZapDocumentDB: 9654,
+	ZapDatastore:  9655,
+}
+
+// ZAP message type IDs (matching native backend handlers).
 const (
 	zapMsgTypeSQL        uint16 = 300
 	zapMsgTypeKV         uint16 = 301
@@ -52,10 +63,11 @@ const (
 
 // ZapConfig configures a ZAP database connection.
 type ZapConfig struct {
-	// Addr is the zap-sidecar address (e.g., "localhost:9651").
+	// Addr is the backend address (e.g., "localhost:9651").
+	// If empty, uses DefaultPorts[Backend] on localhost.
 	Addr string
 
-	// Backend selects which proxy to target.
+	// Backend selects which ZAP-native backend to connect to.
 	Backend ZapBackend
 
 	// Database is the target database name (for SQL/DocumentDB backends).
@@ -85,10 +97,14 @@ type ZapDB struct {
 	tenantID string
 }
 
-// NewZapDB connects to a zap-sidecar and returns a DB implementation.
+// NewZapDB connects to a ZAP-native backend and returns a DB implementation.
 func NewZapDB(cfg *ZapConfig) (*ZapDB, error) {
 	if cfg.Addr == "" {
-		return nil, errors.New("db: zap addr required")
+		if port, ok := DefaultPorts[cfg.Backend]; ok {
+			cfg.Addr = fmt.Sprintf("localhost:%d", port)
+		} else {
+			return nil, errors.New("db: zap addr required")
+		}
 	}
 	if cfg.Collection == "" {
 		switch cfg.Backend {
@@ -123,13 +139,13 @@ func NewZapDB(cfg *ZapConfig) (*ZapDB, error) {
 		return nil, fmt.Errorf("db: zap node start: %w", err)
 	}
 
-	// Connect directly to the sidecar
+	// Connect directly to the backend
 	if err := node.ConnectDirect(cfg.Addr); err != nil {
 		node.Stop()
 		return nil, fmt.Errorf("db: zap connect %s: %w", cfg.Addr, err)
 	}
 
-	// The sidecar's node ID is discovered via handshake
+	// The backend's node ID is discovered via handshake
 	peers := node.Peers()
 	if len(peers) == 0 {
 		node.Stop()

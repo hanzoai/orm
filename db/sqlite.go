@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -983,6 +984,14 @@ func (it *sqliteIterator) Next(dst interface{}) (Key, error) {
 
 	it.offset++
 
+	// If the stored ID is a pure positive integer, restore it as an integer key
+	// (integer keys are stored as their decimal string representation in SQLite).
+	// This ensures downstream hashid encoding works correctly.
+	if intID, err := strconv.ParseInt(id, 10, 64); err == nil && intID > 0 {
+		return &sqliteKey{
+			kind: it.kind, intID: intID, namespace: it.namespace,
+		}, nil
+	}
 	return &sqliteKey{
 		kind: it.kind, stringID: id, namespace: it.namespace,
 	}, nil
