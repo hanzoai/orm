@@ -33,7 +33,7 @@ orm/
 │   ├── sqlite.go       SQLite driver (WAL, JSON storage, json_extract filters, sqlite-vec)
 │   ├── query.go        ParseFilterString, NormalizeOp, ToJSONFieldName, GenerateID
 │   ├── model.go        db.Model base type (non-generic, with hooks and CRUD lifecycle)
-│   ├── zap.go          ZAP binary protocol driver (SQL/DocumentDB/KV/Datastore via sidecar)
+│   ├── zap.go          ZAP binary protocol driver (native: SQL/DocumentDB/KV/Datastore)
 │   ├── manager.go      Multi-tenant Manager (RegisterUserDB/RegisterOrgDB)
 │   └── time.go         Testable timeNow var
 ├── val/                Validation
@@ -144,15 +144,40 @@ user.Create()
 got, err := orm.Get[User](db, user.Id())
 ```
 
-### ZAP Binary Protocol Driver
+### ZAP Binary Protocol Driver (Native — No Sidecar)
 - `db/zap.go` implements db.DB over ZAP binary protocol (luxfi/zap)
-- Communicates with zap-sidecar process that proxies to real databases
-- Supports 4 backends: ZapSQL (PostgreSQL), ZapDocumentDB (MongoDB/FerretDB), ZapKV (Redis/Valkey), ZapDatastore (ClickHouse)
+- Connects directly to ZAP-native backends — no sidecar process needed
+- All Hanzo database forks speak ZAP natively on dedicated ports:
+  - `hanzo/sql` (PostgreSQL fork) → port 9651, msg type 300
+  - `hanzo/kv` (Valkey fork) → port 9653, msg type 301
+  - `hanzo/documentdb` (FerretDB fork) → port 9654, msg type 303
+  - `hanzo/datastore` (ClickHouse fork) → port 9655, msg type 302
 - Binary encoding eliminates JSON serialization overhead for storage operations
 - Query builder generates SQL/MongoDB filters depending on backend type
-- `adapter.go` exposes `OpenZap(*ZapConfig)` convenience constructor
+- `adapter.go` convenience constructors:
+  - `OpenZap(*ZapConfig)` — generic ZAP connection
+  - `OpenDocumentDB(*ZapConfig)` — for "mongo-thinking" clients
+  - `OpenKV(*ZapConfig)` — for cache/sessions
+  - `OpenDatastore(*ZapConfig)` — for OLAP/analytics
+- DocumentDB is the key abstraction: clients who prefer document semantics
+  talk ZAP→documentdb which translates ZAP→ZAP to hanzo/sql (PostgreSQL).
+  Wire format stays ZAP end-to-end; only semantic translation (mongo→SQL).
+
+### ZAP-Native Architecture
+```
+Client (Go/TS/Rust/Python)
+  │ ZAP binary (zero-copy)
+  ▼
+hanzo/sql      :9651  ← OLTP (PostgreSQL + pgvector)
+hanzo/kv       :9653  ← Cache/sessions (Valkey)
+hanzo/documentdb :9654  ← Document API (FerretDB → PostgreSQL)
+hanzo/datastore :9655  ← OLAP (ClickHouse)
+hanzo/base     :9652  ← App framework (collections, auth, realtime)
+```
 
 ## Remaining Work
 
 - Hashid encoding (commerce/util/hashid → orm/datastore/key/hashid)
 - Migrate commerce models in waves (30 simple → 60 medium → 12 complex)
+- TS client for ZAP protocol (`@hanzo/orm` or `@hanzo/sql`)
+- ZAP mDNS auto-discovery (connect by service type instead of port)
