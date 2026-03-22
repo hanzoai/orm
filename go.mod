@@ -1,6 +1,6 @@
 module github.com/hanzoai/orm
 
-go 1.26
+go 1.26.1
 
 require (
 	github.com/hanzoai/kv-go/v9 v9.17.2-hanzo.1
