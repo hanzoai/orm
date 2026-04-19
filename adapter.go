@@ -9,10 +9,27 @@ import (
 	ormdb "github.com/hanzoai/orm/db"
 )
 
-// isSerializationFailure reports whether err is a Postgres serialization
-// failure (40001) or deadlock (40P01) surfaced by pgx. SQLite drivers never
-// return these — their write-mutex already serializes access, so the retry
-// branch is unreachable there (and harmless).
+// isSerializationFailure reports whether err is a transient Postgres error
+// that a retry on a fresh transaction can clear. SQLite drivers never return
+// these — their write-mutex already serializes access, so the retry branch
+// is unreachable there (and harmless).
+//
+// Retryable SQLSTATEs:
+//   - 40001 (serialization_failure) — SERIALIZABLE or REPEATABLE READ
+//     detected a read/write skew that would otherwise violate the
+//     isolation contract.
+//   - 40P01 (deadlock_detected) — two transactions held rows the other
+//     wanted; Postgres picked a victim.
+//   - 55P03 (lock_not_available) — R3-4: NOWAIT or lock_timeout expired
+//     while waiting on a row lock. Production Postgres with a configured
+//     lock_timeout will surface this instead of blocking indefinitely;
+//     the caller should back off and retry, not 500.
+//   - 57014 (query_canceled) — R3-4: statement_timeout expired or an
+//     operator called pg_cancel_backend(). Same reasoning as 55P03:
+//     transient, retryable from the caller's point of view.
+//
+// If a deployment tunes lock_timeout / statement_timeout, absence of 55P03
+// and 57014 here turns every tuned-timeout event into a spurious 500.
 func isSerializationFailure(err error) bool {
 	if err == nil {
 		return false
@@ -23,7 +40,7 @@ func isSerializationFailure(err error) bool {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
 		switch pgErr.Code {
-		case "40001", "40P01":
+		case "40001", "40P01", "55P03", "57014":
 			return true
 		}
 	}
