@@ -381,6 +381,21 @@ func (m *Model[T]) GetById(id string) error {
 	return DeserializeFields(entity)
 }
 
+// GetByIdForUpdate is GetById + row-level exclusive lock. Only valid inside
+// an enclosing RunInTransactionWith block. The lock is held for the lifetime
+// of the transaction; concurrent GetByIdForUpdate callers block until commit.
+func (m *Model[T]) GetByIdForUpdate(id string) error {
+	entity := m.self()
+	kind := m.Kind()
+	key := m.db.NewKey(kind, id, 0, nil)
+	if err := m.db.GetForUpdate(context.Background(), key, entity); err != nil {
+		return err
+	}
+	m.SetKey(key)
+	m.captureSnapshot()
+	return DeserializeFields(entity)
+}
+
 // Exists checks if the entity exists in the database.
 func (m *Model[T]) Exists() (bool, error) {
 	kind := m.Kind()

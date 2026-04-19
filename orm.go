@@ -47,6 +47,23 @@ func Get[T any](db DB, id string) (*T, error) {
 	return entity, nil
 }
 
+// GetForUpdate retrieves an entity of type T by ID AND acquires a row-level
+// lock for the duration of the enclosing transaction. Only valid when db is
+// a transaction (i.e. invoked inside RunInTransactionWith). CAS patterns
+// against a shared row must use this instead of plain Get to defeat
+// serialization anomalies in Postgres.
+func GetForUpdate[T any](db DB, id string) (*T, error) {
+	entity := New[T](db)
+	m := getModel[T](entity)
+	if m == nil {
+		return nil, ErrNotFound
+	}
+	if err := m.GetByIdForUpdate(id); err != nil {
+		return nil, err
+	}
+	return entity, nil
+}
+
 // MustGet retrieves an entity by ID or panics.
 func MustGet[T any](db DB, id string) *T {
 	entity, err := Get[T](db, id)

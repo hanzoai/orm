@@ -763,6 +763,12 @@ func (t *zapTransaction) Get(key Key, dst interface{}) error {
 	return t.db.Get(context.Background(), key, dst)
 }
 
+// GetForUpdate is Get over ZAP — ZAP's transaction model is application-level
+// and the underlying backend handles locking. Treat as regular Get.
+func (t *zapTransaction) GetForUpdate(key Key, dst interface{}) error {
+	return t.db.Get(context.Background(), key, dst)
+}
+
 func (t *zapTransaction) Put(key Key, src interface{}) (Key, error) {
 	return t.db.Put(context.Background(), key, src)
 }

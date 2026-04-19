@@ -2,9 +2,47 @@ package orm
 
 import (
 	"context"
+	"errors"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	ormdb "github.com/hanzoai/orm/db"
 )
+
+// isSerializationFailure reports whether err is a Postgres serialization
+// failure (40001) or deadlock (40P01) surfaced by pgx. SQLite drivers never
+// return these — their write-mutex already serializes access, so the retry
+// branch is unreachable there (and harmless).
+func isSerializationFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrSerializationFailure) {
+		return true
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case "40001", "40P01":
+			return true
+		}
+	}
+	return false
+}
+
+// toDBIsolation maps the public ORM isolation enum onto the driver enum.
+// IsolationDefault leaves the driver at its default (READ COMMITTED for pgx).
+func toDBIsolation(l IsolationLevel) ormdb.IsolationLevel {
+	switch l {
+	case IsolationReadCommitted:
+		return ormdb.IsolationReadCommitted
+	case IsolationRepeatableRead:
+		return ormdb.IsolationRepeatableRead
+	case IsolationSerializable:
+		return ormdb.IsolationSerializable
+	}
+	return ormdb.IsolationDefault
+}
 
 // OpenSQLite creates an orm.DB backed by SQLite.
 func OpenSQLite(cfg *ormdb.SQLiteDBConfig) (DB, error) {
@@ -75,6 +113,12 @@ func (a *dbAdapter) Get(ctx context.Context, key Key, dst interface{}) error {
 	return a.db.Get(ctx, toDBKey(key), dst)
 }
 
+// GetForUpdate outside a transaction is never what you want. Return an error
+// to force the caller into a RunInTransactionWith block.
+func (a *dbAdapter) GetForUpdate(_ context.Context, _ Key, _ interface{}) error {
+	return errors.New("orm: GetForUpdate requires an enclosing transaction (RunInTransactionWith)")
+}
+
 func (a *dbAdapter) Put(ctx context.Context, key Key, src interface{}) (Key, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -122,6 +166,41 @@ func (a *dbAdapter) RunInTransaction(ctx context.Context, fn func(tx DB) error) 
 	}, nil)
 }
 
+func (a *dbAdapter) RunInTransactionWith(ctx context.Context, opts *TxOptions, fn func(tx DB) error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if opts == nil {
+		opts = &TxOptions{}
+	}
+	attempts := opts.MaxAttempts
+	if attempts <= 0 {
+		if opts.Isolation == IsolationSerializable {
+			attempts = 5
+		} else {
+			attempts = 1
+		}
+	}
+	dbOpts := &ormdb.TransactionOptions{
+		ReadOnly:  opts.ReadOnly,
+		Isolation: toDBIsolation(opts.Isolation),
+	}
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		err := a.db.RunInTransaction(ctx, func(tx ormdb.Transaction) error {
+			return fn(&txAdapter{tx: tx, db: a.db})
+		}, dbOpts)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !isSerializationFailure(err) {
+			return err
+		}
+	}
+	return lastErr
+}
+
 func (a *dbAdapter) Close() error {
 	return a.db.Close()
 }
@@ -134,6 +213,11 @@ type txAdapter struct {
 
 func (t *txAdapter) Get(_ context.Context, key Key, dst interface{}) error {
 	return t.tx.Get(toDBKey(key), dst)
+}
+
+// GetForUpdate inside a tx goes straight to the driver's row-lock path.
+func (t *txAdapter) GetForUpdate(_ context.Context, key Key, dst interface{}) error {
+	return t.tx.GetForUpdate(toDBKey(key), dst)
 }
 
 func (t *txAdapter) Put(_ context.Context, key Key, src interface{}) (Key, error) {
@@ -170,6 +254,11 @@ func (t *txAdapter) AllocateIDs(kind string, parent Key, n int) ([]Key, error) {
 
 func (t *txAdapter) RunInTransaction(_ context.Context, fn func(tx DB) error) error {
 	return fn(t) // nested transactions reuse the same tx
+}
+
+func (t *txAdapter) RunInTransactionWith(_ context.Context, _ *TxOptions, fn func(tx DB) error) error {
+	// Nested transactions reuse the same tx; the outer options stick.
+	return fn(t)
 }
 
 func (t *txAdapter) Close() error { return nil }

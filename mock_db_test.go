@@ -76,6 +76,14 @@ func (db *mockDB) RunInTransaction(_ context.Context, fn func(tx DB) error) erro
 	return fn(db)
 }
 
+func (db *mockDB) RunInTransactionWith(_ context.Context, _ *TxOptions, fn func(tx DB) error) error {
+	return fn(db)
+}
+
+func (db *mockDB) GetForUpdate(ctx context.Context, key Key, dst interface{}) error {
+	return db.Get(ctx, key, dst)
+}
+
 func (db *mockDB) Close() error {
 	db.closed = true
 	return nil

@@ -1027,6 +1027,15 @@ func (t *sqliteTransaction) Get(key Key, dst interface{}) error {
 	return json.Unmarshal(data, dst)
 }
 
+// GetForUpdate is Get under SQLite. SQLite does not support FOR UPDATE in the
+// same way Postgres does — the SQLite driver already serializes all writers
+// via db.writeMu (see SQLiteDB.RunInTransaction), so a simple Get under an
+// active write-tx is effectively row-exclusive. Concurrent txs on the same
+// *SQLiteDB cannot overlap at all.
+func (t *sqliteTransaction) GetForUpdate(key Key, dst interface{}) error {
+	return t.Get(key, dst)
+}
+
 func (t *sqliteTransaction) Put(key Key, src interface{}) (Key, error) {
 	data, err := json.Marshal(src)
 	if err != nil {
