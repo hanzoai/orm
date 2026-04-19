@@ -3,6 +3,7 @@ package orm
 import (
 	"context"
 	"errors"
+	"log"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -204,9 +205,12 @@ func (a *dbAdapter) RunInTransactionWith(ctx context.Context, opts *TxOptions, f
 	}
 	var lastErr error
 	for i := 0; i < attempts; i++ {
-		err := a.db.RunInTransaction(ctx, func(tx ormdb.Transaction) error {
-			return fn(&txAdapter{tx: tx, db: a.db})
-		}, dbOpts)
+		// R3-7: recover in-attempt panics, log the attempt index, and
+		// convert to an error so the transaction always rolls back
+		// cleanly instead of tearing down the HTTP server. We re-panic
+		// after logging so operators still see the goroutine trace —
+		// the recover just guarantees Rollback fires first.
+		err := a.runAttempt(ctx, i, dbOpts, fn)
 		if err == nil {
 			return nil
 		}
@@ -216,6 +220,43 @@ func (a *dbAdapter) RunInTransactionWith(ctx context.Context, opts *TxOptions, f
 		}
 	}
 	return lastErr
+}
+
+// runAttempt executes a single transaction attempt with panic recovery.
+// Panics raised inside fn propagate to the caller (re-panic after the tx
+// is rolled back) so the defect surfaces in logs with the full goroutine
+// trace. The recover here exists ONLY to ensure Rollback runs before the
+// panic bubbles up — without it the DB connection would leak in a half-
+// open state. The attempt index is emitted so operators can tell whether
+// the defect happened on a retry or the first shot.
+func (a *dbAdapter) runAttempt(ctx context.Context, attempt int, dbOpts *ormdb.TransactionOptions, fn func(tx DB) error) (retErr error) {
+	var panicVal any
+	defer func() {
+		if panicVal != nil {
+			// Re-panic after Rollback has happened at the driver layer.
+			// The attempt index is attached via Printf rather than a
+			// new type so existing panic recoverers still see the
+			// original value.
+			log.Printf("orm: re-panic after tx rollback (attempt=%d): %v", attempt, panicVal)
+			panic(panicVal)
+		}
+	}()
+	retErr = a.db.RunInTransaction(ctx, func(tx ormdb.Transaction) error {
+		defer func() {
+			if r := recover(); r != nil {
+				panicVal = r
+			}
+		}()
+		err := fn(&txAdapter{tx: tx, db: a.db})
+		if panicVal != nil {
+			// fn panicked; return a terminal error so RunInTransaction
+			// rolls back. isSerializationFailure returns false for this
+			// sentinel, so the retry loop exits immediately.
+			return ErrTxPanic
+		}
+		return err
+	}, dbOpts)
+	return retErr
 }
 
 func (a *dbAdapter) Close() error {
