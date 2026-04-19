@@ -39,40 +39,41 @@ type DB interface {
 	RunInTransaction(ctx context.Context, fn func(tx DB) error) error
 
 	// RunInTransactionWith executes fn inside a transaction with explicit
-	// isolation + retry semantics. For Postgres this maps the requested
-	// IsolationLevel into a BEGIN ISOLATION LEVEL clause; on
-	// serialization_failure (SQLSTATE 40001) the callback is retried up to
-	// opts.MaxAttempts times. SQLite implementations honor the lock-based
-	// serializability they already provide and ignore IsolationLevel.
+	// retry semantics. SQLite serializes every write through its reserved
+	// lock; on SQLITE_BUSY / SQLITE_LOCKED the callback is retried up to
+	// opts.MaxAttempts times. IsolationLevel is kept in the signature for
+	// API stability but is a compile-time hint only — SQLite has a single
+	// isolation model.
 	RunInTransactionWith(ctx context.Context, opts *TxOptions, fn func(tx DB) error) error
 
 	// GetForUpdate is Get + row-level exclusive lock for the duration of the
-	// enclosing transaction. Required for compare-and-swap patterns against a
-	// shared row under Postgres; relying on ON CONFLICT DO UPDATE alone is
-	// insufficient because SSI may not detect the rw-dependency cycle.
-	// Calling GetForUpdate OUTSIDE a transaction is an error.
+	// enclosing transaction. Under SQLite the write mutex + BEGIN IMMEDIATE
+	// path already holds the reserved lock across the entire tx, so
+	// GetForUpdate becomes a regular Get that is strictly serialized against
+	// other writers. Calling GetForUpdate OUTSIDE a transaction is an error.
 	GetForUpdate(ctx context.Context, key Key, dst interface{}) error
 
 	// Close releases resources.
 	Close() error
 }
 
-// IsolationLevel selects the backing driver's transaction isolation.
-// Zero value (IsolationDefault) leaves the driver default (READ COMMITTED on
-// Postgres). Use IsolationSerializable for optimistic CAS that must defend
-// against concurrent writers.
+// IsolationLevel is kept for API stability. SQLite has a single isolation
+// model — every writer holds the reserved lock for the full transaction —
+// so the enum is a compile-time hint, not a runtime switch. Zero value
+// (IsolationDefault) is the only meaningful value.
 type IsolationLevel int
 
 const (
 	IsolationDefault IsolationLevel = iota
+	// Retained for API stability. All values collapse to the SQLite default
+	// isolation at runtime.
 	IsolationReadCommitted
 	IsolationRepeatableRead
 	IsolationSerializable
 )
 
 // TxOptions configures a transaction. MaxAttempts includes the first attempt;
-// set to 1 to disable retry. MaxAttempts == 0 defaults to 5 when Isolation
-// is Serializable, 1 otherwise.
+// set to 1 to disable retry. MaxAttempts == 0 defaults to 5.
 type TxOptions struct {
 	Isolation   IsolationLevel
 	ReadOnly    bool
@@ -80,9 +81,9 @@ type TxOptions struct {
 }
 
 // ErrSerializationFailure wraps a driver error the ORM recognized as a
-// transient SQLSTATE 40001 / 40P01 (serialization failure / deadlock). Callers
-// may wrap their CAS-conflict sentinels with this to piggyback retry, but
-// typically they should let RunInTransactionWith do the retrying itself.
+// transient SQLITE_BUSY / SQLITE_LOCKED. Callers may wrap their CAS-conflict
+// sentinels with this to piggyback retry, but typically they should let
+// RunInTransactionWith do the retrying itself.
 var ErrSerializationFailure = errors.New("orm: serialization failure")
 
 // Key identifies an entity in the datastore.
