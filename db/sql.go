@@ -456,6 +456,24 @@ func (t *sqlTransaction) Get(key Key, dst interface{}) error {
 	return json.Unmarshal(data, dst)
 }
 
+// GetForUpdate is Get + row-level exclusive lock. Concurrent GetForUpdate on
+// the same row block until this tx ends. Used for CAS patterns; avoids the
+// SSI limitations of INSERT ON CONFLICT DO UPDATE.
+func (t *sqlTransaction) GetForUpdate(key Key, dst interface{}) error {
+	row := t.tx.QueryRow(t.ctx,
+		`SELECT data FROM _entities WHERE id = $1 AND kind = $2 AND deleted = FALSE FOR UPDATE`,
+		key.Encode(), key.Kind())
+
+	var data []byte
+	if err := row.Scan(&data); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNoSuchEntity
+		}
+		return err
+	}
+	return json.Unmarshal(data, dst)
+}
+
 func (t *sqlTransaction) Put(key Key, src interface{}) (Key, error) {
 	data, err := json.Marshal(src)
 	if err != nil {

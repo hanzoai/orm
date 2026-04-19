@@ -4,7 +4,10 @@
 // with github.com/hanzoai/commerce.
 package orm
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // DB is the minimal database interface the ORM requires.
 // Implementations exist for SQLite, PostgreSQL, MongoDB, and the legacy
@@ -35,9 +38,52 @@ type DB interface {
 	// RunInTransaction executes fn inside a transaction.
 	RunInTransaction(ctx context.Context, fn func(tx DB) error) error
 
+	// RunInTransactionWith executes fn inside a transaction with explicit
+	// isolation + retry semantics. For Postgres this maps the requested
+	// IsolationLevel into a BEGIN ISOLATION LEVEL clause; on
+	// serialization_failure (SQLSTATE 40001) the callback is retried up to
+	// opts.MaxAttempts times. SQLite implementations honor the lock-based
+	// serializability they already provide and ignore IsolationLevel.
+	RunInTransactionWith(ctx context.Context, opts *TxOptions, fn func(tx DB) error) error
+
+	// GetForUpdate is Get + row-level exclusive lock for the duration of the
+	// enclosing transaction. Required for compare-and-swap patterns against a
+	// shared row under Postgres; relying on ON CONFLICT DO UPDATE alone is
+	// insufficient because SSI may not detect the rw-dependency cycle.
+	// Calling GetForUpdate OUTSIDE a transaction is an error.
+	GetForUpdate(ctx context.Context, key Key, dst interface{}) error
+
 	// Close releases resources.
 	Close() error
 }
+
+// IsolationLevel selects the backing driver's transaction isolation.
+// Zero value (IsolationDefault) leaves the driver default (READ COMMITTED on
+// Postgres). Use IsolationSerializable for optimistic CAS that must defend
+// against concurrent writers.
+type IsolationLevel int
+
+const (
+	IsolationDefault IsolationLevel = iota
+	IsolationReadCommitted
+	IsolationRepeatableRead
+	IsolationSerializable
+)
+
+// TxOptions configures a transaction. MaxAttempts includes the first attempt;
+// set to 1 to disable retry. MaxAttempts == 0 defaults to 5 when Isolation
+// is Serializable, 1 otherwise.
+type TxOptions struct {
+	Isolation   IsolationLevel
+	ReadOnly    bool
+	MaxAttempts int
+}
+
+// ErrSerializationFailure wraps a driver error the ORM recognized as a
+// transient SQLSTATE 40001 / 40P01 (serialization failure / deadlock). Callers
+// may wrap their CAS-conflict sentinels with this to piggyback retry, but
+// typically they should let RunInTransactionWith do the retrying itself.
+var ErrSerializationFailure = errors.New("orm: serialization failure")
 
 // Key identifies an entity in the datastore.
 type Key interface {

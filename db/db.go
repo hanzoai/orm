@@ -194,6 +194,15 @@ type Transaction interface {
 	Put(key Key, src interface{}) (Key, error)
 	Delete(key Key) error
 	Query(kind string) Query
+
+	// GetForUpdate reads the row into dst AND acquires a row-level exclusive
+	// lock for the duration of the transaction. Concurrent txs that also call
+	// GetForUpdate on the same key block until this tx commits or rolls back.
+	// Required for compare-and-swap patterns against a shared row, where SSI
+	// alone is insufficient because ON CONFLICT DO UPDATE can miss the
+	// rw-dependency cycle. SQLite honors this via the write mutex it already
+	// holds; drivers without row-locking treat it as a regular Get.
+	GetForUpdate(key Key, dst interface{}) error
 }
 
 // TransactionOptions configures transaction behavior.
