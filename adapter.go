@@ -4,33 +4,22 @@ import (
 	"context"
 	"errors"
 	"log"
-
-	"github.com/jackc/pgx/v5/pgconn"
+	"strings"
 
 	ormdb "github.com/hanzoai/orm/db"
 )
 
-// isSerializationFailure reports whether err is a transient Postgres error
-// that a retry on a fresh transaction can clear. SQLite drivers never return
-// these — their write-mutex already serializes access, so the retry branch
-// is unreachable there (and harmless).
+// isSerializationFailure reports whether err is a transient storage error that
+// a retry on a fresh transaction can clear. For SQLite this maps to BUSY and
+// LOCKED — two replicas (or two goroutines that bypassed the write mutex for
+// some reason) both reserving the write lock at once. The driver surfaces
+// those in the error string; we match on the substrings SQLite uses so we do
+// not need to import the driver's error type here.
 //
-// Retryable SQLSTATEs:
-//   - 40001 (serialization_failure) — SERIALIZABLE or REPEATABLE READ
-//     detected a read/write skew that would otherwise violate the
-//     isolation contract.
-//   - 40P01 (deadlock_detected) — two transactions held rows the other
-//     wanted; Postgres picked a victim.
-//   - 55P03 (lock_not_available) — R3-4: NOWAIT or lock_timeout expired
-//     while waiting on a row lock. Production Postgres with a configured
-//     lock_timeout will surface this instead of blocking indefinitely;
-//     the caller should back off and retry, not 500.
-//   - 57014 (query_canceled) — R3-4: statement_timeout expired or an
-//     operator called pg_cancel_backend(). Same reasoning as 55P03:
-//     transient, retryable from the caller's point of view.
-//
-// If a deployment tunes lock_timeout / statement_timeout, absence of 55P03
-// and 57014 here turns every tuned-timeout event into a spurious 500.
+// Retry semantics: SQLite serializes every write through the BEGIN IMMEDIATE
+// reserved lock, so the only way two writers race is if the first holds the
+// lock longer than the busy_timeout. In that case a short backoff-and-retry
+// on the outer transaction clears the collision.
 func isSerializationFailure(err error) bool {
 	if err == nil {
 		return false
@@ -38,27 +27,20 @@ func isSerializationFailure(err error) bool {
 	if errors.Is(err, ErrSerializationFailure) {
 		return true
 	}
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		switch pgErr.Code {
-		case "40001", "40P01", "55P03", "57014":
-			return true
-		}
+	msg := err.Error()
+	if strings.Contains(msg, "SQLITE_BUSY") ||
+		strings.Contains(msg, "SQLITE_LOCKED") ||
+		strings.Contains(msg, "database is locked") ||
+		strings.Contains(msg, "database table is locked") {
+		return true
 	}
 	return false
 }
 
-// toDBIsolation maps the public ORM isolation enum onto the driver enum.
-// IsolationDefault leaves the driver at its default (READ COMMITTED for pgx).
-func toDBIsolation(l IsolationLevel) ormdb.IsolationLevel {
-	switch l {
-	case IsolationReadCommitted:
-		return ormdb.IsolationReadCommitted
-	case IsolationRepeatableRead:
-		return ormdb.IsolationRepeatableRead
-	case IsolationSerializable:
-		return ormdb.IsolationSerializable
-	}
+// toDBIsolation maps the public ORM isolation hint onto the driver enum.
+// SQLite has a single isolation model — every writer holds the reserved lock
+// for the full tx — so the enum is a compile-time hint, not a runtime switch.
+func toDBIsolation(_ IsolationLevel) ormdb.IsolationLevel {
 	return ormdb.IsolationDefault
 }
 
@@ -82,21 +64,8 @@ func OpenZap(cfg *ormdb.ZapConfig) (DB, error) {
 	return &dbAdapter{db: zdb}, nil
 }
 
-// OpenSQL creates an orm.DB backed by SQL (PostgreSQL via pgx).
-func OpenSQL(cfg *ormdb.SQLConfig) (DB, error) {
-	sdb, err := ormdb.NewSQLDB(cfg)
-	if err != nil {
-		return nil, err
-	}
-	return &dbAdapter{db: sdb}, nil
-}
-
-// OpenPostgres is an alias for OpenSQL (backward compatibility).
-var OpenPostgres = OpenSQL
-
 // OpenDocumentDB creates an orm.DB backed by ZAP to hanzo/documentdb.
 // For clients who prefer MongoDB-style document semantics.
-// Data is stored in hanzo/sql (PostgreSQL) but accessed via document operations.
 func OpenDocumentDB(cfg *ormdb.ZapConfig) (DB, error) {
 	cfg.Backend = ormdb.ZapDocumentDB
 	return OpenZap(cfg)
@@ -193,11 +162,7 @@ func (a *dbAdapter) RunInTransactionWith(ctx context.Context, opts *TxOptions, f
 	}
 	attempts := opts.MaxAttempts
 	if attempts <= 0 {
-		if opts.Isolation == IsolationSerializable {
-			attempts = 5
-		} else {
-			attempts = 1
-		}
+		attempts = 5
 	}
 	dbOpts := &ormdb.TransactionOptions{
 		ReadOnly:  opts.ReadOnly,
@@ -205,11 +170,10 @@ func (a *dbAdapter) RunInTransactionWith(ctx context.Context, opts *TxOptions, f
 	}
 	var lastErr error
 	for i := 0; i < attempts; i++ {
-		// R3-7: recover in-attempt panics, log the attempt index, and
-		// convert to an error so the transaction always rolls back
-		// cleanly instead of tearing down the HTTP server. We re-panic
-		// after logging so operators still see the goroutine trace —
-		// the recover just guarantees Rollback fires first.
+		// Recover in-attempt panics, log the attempt index, convert to an
+		// error so the transaction rolls back cleanly. Re-panic after logging
+		// so operators still see the goroutine trace — the recover just
+		// guarantees Rollback fires first.
 		err := a.runAttempt(ctx, i, dbOpts, fn)
 		if err == nil {
 			return nil
@@ -223,20 +187,10 @@ func (a *dbAdapter) RunInTransactionWith(ctx context.Context, opts *TxOptions, f
 }
 
 // runAttempt executes a single transaction attempt with panic recovery.
-// Panics raised inside fn propagate to the caller (re-panic after the tx
-// is rolled back) so the defect surfaces in logs with the full goroutine
-// trace. The recover here exists ONLY to ensure Rollback runs before the
-// panic bubbles up — without it the DB connection would leak in a half-
-// open state. The attempt index is emitted so operators can tell whether
-// the defect happened on a retry or the first shot.
 func (a *dbAdapter) runAttempt(ctx context.Context, attempt int, dbOpts *ormdb.TransactionOptions, fn func(tx DB) error) (retErr error) {
 	var panicVal any
 	defer func() {
 		if panicVal != nil {
-			// Re-panic after Rollback has happened at the driver layer.
-			// The attempt index is attached via Printf rather than a
-			// new type so existing panic recoverers still see the
-			// original value.
 			log.Printf("orm: re-panic after tx rollback (attempt=%d): %v", attempt, panicVal)
 			panic(panicVal)
 		}
@@ -249,9 +203,6 @@ func (a *dbAdapter) runAttempt(ctx context.Context, attempt int, dbOpts *ormdb.T
 		}()
 		err := fn(&txAdapter{tx: tx, db: a.db})
 		if panicVal != nil {
-			// fn panicked; return a terminal error so RunInTransaction
-			// rolls back. isSerializationFailure returns false for this
-			// sentinel, so the retry loop exits immediately.
 			return ErrTxPanic
 		}
 		return err
@@ -274,6 +225,7 @@ func (t *txAdapter) Get(_ context.Context, key Key, dst interface{}) error {
 }
 
 // GetForUpdate inside a tx goes straight to the driver's row-lock path.
+// SQLite honors this via the write mutex it already holds for the tx.
 func (t *txAdapter) GetForUpdate(_ context.Context, key Key, dst interface{}) error {
 	return t.tx.GetForUpdate(toDBKey(key), dst)
 }

@@ -28,7 +28,7 @@ func TestRunInTransactionWith_PanicRecovered(t *testing.T) {
 	}()
 
 	_ = db.RunInTransactionWith(context.Background(), &TxOptions{
-		Isolation: IsolationReadCommitted,
+		Isolation: IsolationDefault,
 	}, func(tx DB) error {
 		panic("intentional R3-7 test panic")
 	})
