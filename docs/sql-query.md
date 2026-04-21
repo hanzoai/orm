@@ -15,7 +15,10 @@
 
 There is one and only one way to do each: for dynamic / structural queries
 reach for `orm/query` directly; for typed result binding reach for
-`orm.Typed[T]`. Do not import `hanzoai/dbx` directly from application code.
+`orm.Typed[T]`. New code should import `orm/query` rather than
+`hanzoai/dbx` — the dbx module is the canonical SQL AST and continues to
+work if already imported, but the single idiomatic path for new callers
+is `orm/query`.
 
 ## When to use `orm.Typed[T]`
 
@@ -127,6 +130,49 @@ tq.Query().
 
 rows, err := tq.All(ctx)
 ```
+
+## HashExp keys — developer-controlled only
+
+`query.HashExp` is a map sugar for equality-AND clauses. Its keys are
+concatenated verbatim into the generated SQL after a column-quote pass.
+The dbx column-quoter preserves the input unchanged when it already
+contains a backtick — so a key like
+
+```go
+query.HashExp{"id`, (SELECT 1), `x": 1}
+```
+
+builds to
+
+```sql
+id`, (SELECT 1), `x = {:p0}
+```
+
+which is an injected fragment. Do not pass untrusted strings as
+`HashExp` keys. Every key in a `HashExp` literal in application code
+should be a compile-time column identifier.
+
+When a key can come from untrusted input (HTTP query params, user
+filter UIs, config flags), use `orm.SafeHashExp`:
+
+```go
+h, err := orm.SafeHashExp(map[string]any{
+    userSuppliedColumn: userSuppliedValue,
+})
+if err != nil {
+    return fmt.Errorf("unsafe filter: %w", err)
+}
+rows, err := orm.Select[User](db, "users").Where(h).All(ctx)
+```
+
+`SafeHashExp` rejects any key that does not match
+`^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$` — no backticks,
+quotes, spaces, or punctuation. Values are not validated by
+`SafeHashExp` because dbx parameterizes them; the injection surface is
+exclusively in the keys.
+
+For static call sites where the keys are known-safe literals, use
+`orm.MustSafeHashExp` to assert the invariant at construction time.
 
 ## What is *not* re-exported
 
