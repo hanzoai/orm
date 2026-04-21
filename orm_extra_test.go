@@ -413,6 +413,12 @@ func TestResetRegistry(t *testing.T) {
 		QueryTTL:  60,
 	}))
 	Register[AllTypesModel]("all-types")
+
+	// Re-register types whose init() runs once — resetting the registry
+	// here would otherwise leave every consumer test broken on `-count>1`.
+	Register[intgUser]("intg-user")
+	Register[intgHooked]("intg-hooked")
+	Register[UpdateHookedModel]("update-hooked")
 }
 
 // Test duplicate registration panics
