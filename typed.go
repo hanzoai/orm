@@ -8,33 +8,53 @@ import (
 	"github.com/hanzoai/orm/query"
 )
 
+// ErrNilDB is returned by terminators when the Typed[T] was constructed
+// with a nil *query.DB or nil *query.SelectQuery. The constructor does
+// not panic — it captures the precondition failure and defers it to the
+// terminator so callers get a proper error value instead of a nil-pointer
+// dereference on a hot path.
+var ErrNilDB = errors.New("orm: nil database handle")
+
 // Typed is a generic wrapper over a SQL SelectQuery that binds result rows
 // to a known Go type T. It exists so callers don't need to thread untyped
 // interface{} values through dbx's All/One API.
 //
 // Construct a Typed with NewTyped(selectQuery) or via the Select[T] helper.
 // Chain Where / AndWhere / OrderBy / Limit / Offset to shape the query, then
-// terminate with All, One, or First.
+// terminate with All, One, First, or Count.
 //
-// Typed is a thin shell around *query.SelectQuery. It does not own any state
-// of its own — the underlying SelectQuery is the single source of truth and
-// can be retrieved via Query() for cases that need escape-hatch access to
-// dbx-specific fluent methods not mirrored here.
+// Typed[T] is effectively immutable: every chain method returns a NEW
+// Typed[T] wrapping a cloned *query.SelectQuery. Sharing a *Typed[T]
+// across goroutines is safe — no terminator or chain method mutates the
+// receiver. This is a hard contract enforced by the -race regression
+// test TestTypedConcurrentSafe.
 type Typed[T any] struct {
-	q *query.SelectQuery
+	q   *query.SelectQuery
+	err error // deferred construction error (nil DB, nil query, ...)
 }
 
 // NewTyped wraps an existing *query.SelectQuery so its rows bind to T.
 // The SelectQuery must already have its FROM / columns configured by the
 // caller (or be configured via further chaining before termination).
+//
+// Passing nil returns a Typed[T] whose terminators fail with ErrNilDB
+// rather than panicking on first use.
 func NewTyped[T any](q *query.SelectQuery) *Typed[T] {
+	if q == nil {
+		return &Typed[T]{err: ErrNilDB}
+	}
 	return &Typed[T]{q: q}
 }
 
 // Select builds a `SELECT cols FROM table` SelectQuery on db and wraps it as
 // Typed[T]. Pass the columns and table name explicitly; for dynamic field
 // selection, construct the SelectQuery manually and use NewTyped.
+//
+// A nil db is captured as a deferred error (see NewTyped) — no panic.
 func Select[T any](db *query.DB, table string, cols ...string) *Typed[T] {
+	if db == nil {
+		return &Typed[T]{err: ErrNilDB}
+	}
 	if len(cols) == 0 {
 		cols = []string{"*"}
 	}
@@ -44,55 +64,101 @@ func Select[T any](db *query.DB, table string, cols ...string) *Typed[T] {
 // Query returns the underlying *query.SelectQuery. Use this to apply
 // dbx-specific methods (Join, GroupBy, Having, Distinct, …) not mirrored
 // on Typed, then continue chaining on Typed if desired.
+//
+// Mutating the returned *SelectQuery mutates the Typed[T] it came from
+// — the escape hatch opts out of the immutable chain contract. Use
+// Typed[T].Clone().Query() if you need to mutate in isolation.
 func (t *Typed[T]) Query() *query.SelectQuery { return t.q }
 
-// Where replaces the current WHERE clause.
+// Clone returns an independent Typed[T] whose underlying SelectQuery is
+// a deep-copy of the receiver's. Further chain calls on the clone do
+// not affect the original.
+func (t *Typed[T]) Clone() *Typed[T] {
+	if t.q == nil {
+		return &Typed[T]{err: t.err}
+	}
+	return &Typed[T]{q: t.q.Copy(), err: t.err}
+}
+
+// Where returns a Typed[T] whose underlying query has the given WHERE
+// clause. The receiver is unchanged.
 func (t *Typed[T]) Where(e query.Expression) *Typed[T] {
-	t.q.Where(e)
-	return t
+	if t.err != nil {
+		return t
+	}
+	q := t.q.Copy()
+	q.Where(e)
+	return &Typed[T]{q: q}
 }
 
-// AndWhere conjoins an Expression with the current WHERE clause.
+// AndWhere returns a Typed[T] whose underlying query conjoins e with the
+// existing WHERE. The receiver is unchanged.
 func (t *Typed[T]) AndWhere(e query.Expression) *Typed[T] {
-	t.q.AndWhere(e)
-	return t
+	if t.err != nil {
+		return t
+	}
+	q := t.q.Copy()
+	q.AndWhere(e)
+	return &Typed[T]{q: q}
 }
 
-// OrWhere disjoins an Expression with the current WHERE clause.
+// OrWhere returns a Typed[T] whose underlying query disjoins e with the
+// existing WHERE. The receiver is unchanged.
 func (t *Typed[T]) OrWhere(e query.Expression) *Typed[T] {
-	t.q.OrWhere(e)
-	return t
+	if t.err != nil {
+		return t
+	}
+	q := t.q.Copy()
+	q.OrWhere(e)
+	return &Typed[T]{q: q}
 }
 
-// OrderBy replaces the ORDER BY clause.
+// OrderBy returns a Typed[T] whose underlying query has the given
+// ORDER BY columns. The receiver is unchanged.
 func (t *Typed[T]) OrderBy(cols ...string) *Typed[T] {
-	t.q.OrderBy(cols...)
-	return t
+	if t.err != nil {
+		return t
+	}
+	q := t.q.Copy()
+	q.OrderBy(cols...)
+	return &Typed[T]{q: q}
 }
 
-// Limit sets the LIMIT clause. Pass -1 to clear.
+// Limit returns a Typed[T] whose underlying query has the given LIMIT.
+// Pass -1 to clear. The receiver is unchanged.
 func (t *Typed[T]) Limit(n int64) *Typed[T] {
-	t.q.Limit(n)
-	return t
+	if t.err != nil {
+		return t
+	}
+	q := t.q.Copy()
+	q.Limit(n)
+	return &Typed[T]{q: q}
 }
 
-// Offset sets the OFFSET clause.
+// Offset returns a Typed[T] whose underlying query has the given OFFSET.
+// The receiver is unchanged.
 func (t *Typed[T]) Offset(n int64) *Typed[T] {
-	t.q.Offset(n)
-	return t
+	if t.err != nil {
+		return t
+	}
+	q := t.q.Copy()
+	q.Offset(n)
+	return &Typed[T]{q: q}
 }
 
 // All executes the query and returns all rows bound to []T.
 // A nil slice is returned on empty result; callers should check len() rather
 // than comparing to nil.
 //
-// The ctx argument is accepted for API symmetry with the rest of orm; dbx
-// does not currently plumb it through the lower layers, but reserving it
-// here means future cancel/timeout support is a non-breaking change.
+// ctx is threaded through the underlying *SelectQuery via WithContext so
+// cancellation / deadline is respected by the driver.
 func (t *Typed[T]) All(ctx context.Context) ([]T, error) {
-	_ = ctx
+	if t.err != nil {
+		return nil, t.err
+	}
 	var out []T
-	if err := t.q.All(&out); err != nil {
+	q := t.q.Copy().WithContext(ctx)
+	if err := q.All(&out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -102,9 +168,12 @@ func (t *Typed[T]) All(ctx context.Context) ([]T, error) {
 // Returns ErrNotFound if the result set is empty, and propagates any other
 // error from the underlying driver.
 func (t *Typed[T]) One(ctx context.Context) (*T, error) {
-	_ = ctx
+	if t.err != nil {
+		return nil, t.err
+	}
 	var out T
-	if err := t.q.One(&out); err != nil {
+	q := t.q.Copy().WithContext(ctx)
+	if err := q.One(&out); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -117,9 +186,12 @@ func (t *Typed[T]) One(ctx context.Context) (*T, error) {
 // error. An empty result set returns (zero, false, nil) — it is not an
 // error condition, mirroring Go's map-lookup idiom.
 func (t *Typed[T]) First(ctx context.Context) (T, bool, error) {
-	_ = ctx
 	var out T
-	if err := t.q.One(&out); err != nil {
+	if t.err != nil {
+		return out, false, t.err
+	}
+	q := t.q.Copy().WithContext(ctx)
+	if err := q.One(&out); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return out, false, nil
 		}
@@ -129,14 +201,18 @@ func (t *Typed[T]) First(ctx context.Context) (T, bool, error) {
 }
 
 // Count executes the query as `SELECT COUNT(*)` and returns the row count.
-// This rewrites the SELECT list internally; all other clauses (WHERE, JOIN,
-// GROUP BY, HAVING, ORDER BY, LIMIT, OFFSET) are preserved.
+// All other clauses (WHERE, JOIN, GROUP BY, HAVING, ORDER BY, LIMIT, OFFSET)
+// are preserved on a CLONE of the underlying *SelectQuery — the receiver's
+// column list is never mutated, so subsequent .All() / .One() calls return
+// rows with the caller's original projection intact.
 func (t *Typed[T]) Count(ctx context.Context) (int64, error) {
-	_ = ctx
+	if t.err != nil {
+		return 0, t.err
+	}
 	var n int64
-	// Re-run as count. We do not mutate the caller's Typed — we clone the
-	// built SQL via a fresh SelectQuery on the same DB.
-	if err := t.q.Select("COUNT(*)").Row(&n); err != nil {
+	q := t.q.Copy().WithContext(ctx)
+	q.Select("COUNT(*)")
+	if err := q.Row(&n); err != nil {
 		return 0, err
 	}
 	return n, nil
