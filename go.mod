@@ -5,7 +5,7 @@ go 1.26.1
 require (
 	github.com/hanzoai/dbx v1.16.0
 	github.com/hanzoai/kv-go/v9 v9.18.0
-	github.com/luxfi/zap v0.2.0
+	github.com/luxfi/zap v0.3.0
 	modernc.org/sqlite v1.50.0
 )
 
