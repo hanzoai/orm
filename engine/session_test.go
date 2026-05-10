@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 type User struct {
@@ -37,13 +37,13 @@ func newTestEngine(t *testing.T) *Engine {
 	tmpFile.Close()
 	t.Cleanup(func() { os.Remove(tmpFile.Name()) })
 
-	db, err := sql.Open("sqlite3", tmpFile.Name())
+	db, err := sql.Open("sqlite", tmpFile.Name())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	e := NewEngineWithDB("sqlite3", db)
+	e := NewEngineWithDB("sqlite", db)
 
 	if err := e.Sync2(new(User)); err != nil {
 		t.Fatal(err)
@@ -392,13 +392,13 @@ func TestEngine_Sync2_CompositePK(t *testing.T) {
 	tmpFile.Close()
 	t.Cleanup(func() { os.Remove(tmpFile.Name()) })
 
-	db, err := sql.Open("sqlite3", tmpFile.Name())
+	db, err := sql.Open("sqlite", tmpFile.Name())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	e := NewEngineWithDB("sqlite3", db)
+	e := NewEngineWithDB("sqlite", db)
 
 	if err := e.Sync2(new(Application)); err != nil {
 		t.Fatal(err)
@@ -438,13 +438,13 @@ func TestEngine_JSON_WhitespaceRoundtrip(t *testing.T) {
 	tmpFile.Close()
 	t.Cleanup(func() { os.Remove(tmpFile.Name()) })
 
-	db, err := sql.Open("sqlite3", tmpFile.Name())
+	db, err := sql.Open("sqlite", tmpFile.Name())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	e := NewEngineWithDB("sqlite3", db)
+	e := NewEngineWithDB("sqlite", db)
 	e.Sync2(new(Application))
 
 	// Insert app with grant types — this is the exact case xorm breaks on
