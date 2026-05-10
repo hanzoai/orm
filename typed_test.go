@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 
 	"github.com/hanzoai/orm"
 	"github.com/hanzoai/orm/query"
@@ -25,7 +25,7 @@ type typedUser struct {
 func seedTypedDB(t *testing.T) *query.DB {
 	t.Helper()
 
-	sqlDB, err := sql.Open("sqlite3", ":memory:")
+	sqlDB, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func seedTypedDB(t *testing.T) *query.DB {
 		}
 	}
 
-	return query.NewFromDB(sqlDB, "sqlite3")
+	return query.NewFromDB(sqlDB, "sqlite")
 }
 
 func TestTypedAll(t *testing.T) {

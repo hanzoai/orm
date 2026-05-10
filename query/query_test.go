@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 
 	"github.com/hanzoai/dbx"
 	"github.com/hanzoai/orm/query"
@@ -58,13 +58,13 @@ func TestAliasIdentity(t *testing.T) {
 // This is the core correctness contract of the re-export layer: the
 // migration is a no-op in terms of generated SQL.
 func TestSelectQueryBitIdentity(t *testing.T) {
-	sqlDB, err := sql.Open("sqlite3", ":memory:")
+	sqlDB, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer sqlDB.Close()
 
-	viaDbx := dbx.NewFromDB(sqlDB, "sqlite3").
+	viaDbx := dbx.NewFromDB(sqlDB, "sqlite").
 		Select("id", "email", "active").
 		From("users").
 		Where(dbx.HashExp{"active": true}).
@@ -72,7 +72,7 @@ func TestSelectQueryBitIdentity(t *testing.T) {
 		OrderBy("email").
 		Limit(10)
 
-	viaQuery := query.NewFromDB(sqlDB, "sqlite3").
+	viaQuery := query.NewFromDB(sqlDB, "sqlite").
 		Select("id", "email", "active").
 		From("users").
 		Where(query.HashExp{"active": true}).
@@ -91,12 +91,12 @@ func TestSelectQueryBitIdentity(t *testing.T) {
 // expression that Builds to the same SQL+params as its dbx counterpart.
 // This doubles as a smoke test that the var bindings are wired correctly.
 func TestExpressionBuilders(t *testing.T) {
-	sqlDB, err := sql.Open("sqlite3", ":memory:")
+	sqlDB, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer sqlDB.Close()
-	db := dbx.NewFromDB(sqlDB, "sqlite3")
+	db := dbx.NewFromDB(sqlDB, "sqlite")
 
 	cases := []struct {
 		name string
@@ -134,7 +134,7 @@ func TestExpressionBuilders(t *testing.T) {
 // TestPassthroughBoundary confirms a value produced by one package can cross
 // into the other without conversion — the migration-safety contract.
 func TestPassthroughBoundary(t *testing.T) {
-	sqlDB, err := sql.Open("sqlite3", ":memory:")
+	sqlDB, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,14 +142,14 @@ func TestPassthroughBoundary(t *testing.T) {
 
 	// Produce a SelectQuery via dbx, hand it to a function that expects
 	// *query.SelectQuery, and run it.
-	got := dbx.NewFromDB(sqlDB, "sqlite3").Select("1").From("(SELECT 1)")
+	got := dbx.NewFromDB(sqlDB, "sqlite").Select("1").From("(SELECT 1)")
 	useAsQuery := func(q *query.SelectQuery) string { return q.Build().SQL() }
 	if useAsQuery(got) == "" {
 		t.Fatal("passthrough produced empty SQL")
 	}
 
 	// And the reverse.
-	got2 := query.NewFromDB(sqlDB, "sqlite3").Select("1").From("(SELECT 1)")
+	got2 := query.NewFromDB(sqlDB, "sqlite").Select("1").From("(SELECT 1)")
 	useAsDbx := func(q *dbx.SelectQuery) string { return q.Build().SQL() }
 	if useAsDbx(got2) == "" {
 		t.Fatal("reverse passthrough produced empty SQL")
