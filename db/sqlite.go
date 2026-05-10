@@ -13,7 +13,11 @@ import (
 	"strings"
 	"sync"
 
-	_ "github.com/mattn/go-sqlite3" // SQLite driver
+	// Pure-Go SQLite driver. Drops the CGO requirement that
+	// mattn/go-sqlite3 carried, restoring `CGO_ENABLED=0` static
+	// builds across consumers (IAM, ATS, BD, TA, AML, KMS).
+	// Registers as driver name "sqlite" (not "sqlite3").
+	_ "modernc.org/sqlite"
 )
 
 // SQLiteDBConfig holds configuration for a SQLite database.
@@ -49,14 +53,14 @@ func NewSQLiteDB(cfg *SQLiteDBConfig) (*SQLiteDB, error) {
 
 	pragmas := buildPragmas(cfg.Config)
 
-	readDB, err := sql.Open("sqlite3", cfg.Path+pragmas)
+	readDB, err := sql.Open("sqlite", cfg.Path+pragmas)
 	if err != nil {
 		return nil, fmt.Errorf("db: failed to open read connection: %w", err)
 	}
 	readDB.SetMaxOpenConns(cfg.Config.MaxOpenConns)
 	readDB.SetMaxIdleConns(cfg.Config.MaxIdleConns)
 
-	writeDB, err := sql.Open("sqlite3", cfg.Path+pragmas)
+	writeDB, err := sql.Open("sqlite", cfg.Path+pragmas)
 	if err != nil {
 		readDB.Close()
 		return nil, fmt.Errorf("db: failed to open write connection: %w", err)
