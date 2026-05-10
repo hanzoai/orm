@@ -32,8 +32,8 @@ github.com/klauspost/cpuid/v2 v2.0.9 h1:lgaqFMSdTdQYdZ04uHyN2d/eKdOMyi2YLSvlQIBF
 github.com/klauspost/cpuid/v2 v2.0.9/go.mod h1:FInQzS24/EEf25PyTYn52gqo7WaD8xa0213Md/qVLRg=
 github.com/luxfi/mdns v0.1.0 h1:VB3mQcETc9j5SY1S6lAgFtuGr/rjWuDgPYnxS+OKWMQ=
 github.com/luxfi/mdns v0.1.0/go.mod h1:/3dheKVjUk2yiS/ocH1IDzeLXOIe+kpVsErIGDOZdiQ=
-github.com/luxfi/zap v0.2.0 h1:RzvOkp3EoN5UCkpnqfObHLM1sEHy7YcxXKuermhE/VA=
-github.com/luxfi/zap v0.2.0/go.mod h1:2hydPSa/XMCMtfW6/DC9M5Bt03N5h75QwCV5Vypsqr4=
+github.com/luxfi/zap v0.3.0 h1:U3We3zGceOhb1hLqSvxB8DRk7NfFc/A7wvH2AOeWGdM=
+github.com/luxfi/zap v0.3.0/go.mod h1:CobyEg6MNO6qZ5wn3kVEw6QCxFVZvvGMnEKsC5sJZtI=
 github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY=
 github.com/mattn/go-isatty v0.0.20/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
 github.com/miekg/dns v1.1.27/go.mod h1:KNUDUusw/aVsxyTYZM1oqvCicbwhgbNgztCETuNZ7xM=
