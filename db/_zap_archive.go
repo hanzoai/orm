@@ -1,3 +1,6 @@
+//go:build never
+// node-based ZAP backend stashed pending zap-proto/go Node port (skipped luxfi/mdns dep)
+
 // ZAP protocol driver for the ORM.
 //
 // ZAP (Zero-Copy App Proto) uses binary encoding over RPC, communicating
@@ -17,7 +20,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/luxfi/zap"
+	"github.com/zap-proto/go"
 )
 
 // ZapBackend selects which ZAP-native backend to connect to.
