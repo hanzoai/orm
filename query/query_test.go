@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/hanzoai/sqlite"
 
 	"github.com/hanzoai/dbx"
 	"github.com/hanzoai/orm/query"
