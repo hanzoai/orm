@@ -13,11 +13,14 @@ import (
 	"strings"
 	"sync"
 
-	// Pure-Go SQLite driver. Drops the CGO requirement that
-	// mattn/go-sqlite3 carried, restoring `CGO_ENABLED=0` static
-	// builds across consumers (IAM, ATS, BD, TA, AML, KMS).
-	// Registers as driver name "sqlite" (not "sqlite3").
-	_ "modernc.org/sqlite"
+	// Canonical Hanzo SQLite driver. Registers the "sqlite" database/sql name
+	// under BOTH build configs — modernc (pure Go, !cgo: keeps CGO_ENABLED=0
+	// static builds for IAM/ATS/BD/TA/AML/KMS) and mattn+SQLCipher (cgo). This
+	// MUST route through hanzoai/sqlite, never modernc directly: a cgo consumer
+	// that also links hanzoai/sqlite (e.g. commerce, for SQLCipher) otherwise
+	// registers "sqlite" twice (orm→modernc + hanzoai/sqlite→mattn) and panics
+	// at init ("sql: Register called twice for driver sqlite").
+	_ "github.com/hanzoai/sqlite"
 )
 
 // SQLiteDBConfig holds configuration for a SQLite database.
