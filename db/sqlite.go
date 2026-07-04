@@ -20,7 +20,13 @@ import (
 	// that also links hanzoai/sqlite (e.g. commerce, for SQLCipher) otherwise
 	// registers "sqlite" twice (orm→modernc + hanzoai/sqlite→mattn) and panics
 	// at init ("sql: Register called twice for driver sqlite").
-	_ "github.com/hanzoai/sqlite"
+	//
+	// Imported NAMED for PragmaDSN: it encodes the pragma set in the ACTIVE
+	// backend's DSN syntax. The old bare mattn-form `_busy_timeout=` string was
+	// SILENTLY IGNORED by modernc (the !cgo backend all CGO=0 auth services run)
+	// → busy_timeout=0 + journal_mode=DELETE → immediate SQLITE_BUSY under
+	// concurrent writers. PragmaDSN applies busy_timeout+WAL on both backends.
+	"github.com/hanzoai/sqlite"
 )
 
 // SQLiteDBConfig holds configuration for a SQLite database.
@@ -54,16 +60,16 @@ func NewSQLiteDB(cfg *SQLiteDBConfig) (*SQLiteDB, error) {
 		return nil, fmt.Errorf("db: failed to create directory %s: %w", dir, err)
 	}
 
-	pragmas := buildPragmas(cfg.Config)
+	dsn := sqlite.PragmaDSN(cfg.Path, configPragmas(cfg.Config))
 
-	readDB, err := sql.Open("sqlite", cfg.Path+pragmas)
+	readDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("db: failed to open read connection: %w", err)
 	}
 	readDB.SetMaxOpenConns(cfg.Config.MaxOpenConns)
 	readDB.SetMaxIdleConns(cfg.Config.MaxIdleConns)
 
-	writeDB, err := sql.Open("sqlite", cfg.Path+pragmas)
+	writeDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		readDB.Close()
 		return nil, fmt.Errorf("db: failed to open write connection: %w", err)
@@ -91,29 +97,39 @@ func NewSQLiteDB(cfg *SQLiteDBConfig) (*SQLiteDB, error) {
 	return db, nil
 }
 
-func buildPragmas(cfg SQLiteConfig) string {
-	var pragmas []string
-
-	if cfg.BusyTimeout > 0 {
-		pragmas = append(pragmas, fmt.Sprintf("_busy_timeout=%d", cfg.BusyTimeout))
+// configPragmas maps SQLiteConfig to the canonical pragma set, applying config
+// overrides where set and safe defaults otherwise. busy_timeout + WAL are ALWAYS
+// present so concurrent readers/writers block (not error) on a busy database. The
+// returned list is encoded by sqlite.PragmaDSN in the active backend's DSN syntax
+// (modernc `_pragma=name(value)` / mattn `_name=value`) — the previous bare
+// mattn-only string was dropped by modernc, opening the DB with busy_timeout=0 +
+// journal_mode=DELETE → SQLITE_BUSY ("database is locked") under load.
+func configPragmas(cfg SQLiteConfig) []sqlite.Pragma {
+	busy := cfg.BusyTimeout
+	if busy <= 0 {
+		busy = 10000
 	}
-	if cfg.JournalMode != "" {
-		pragmas = append(pragmas, fmt.Sprintf("_journal_mode=%s", cfg.JournalMode))
+	journal := cfg.JournalMode
+	if journal == "" {
+		journal = "WAL"
 	}
-	if cfg.Synchronous != "" {
-		pragmas = append(pragmas, fmt.Sprintf("_synchronous=%s", cfg.Synchronous))
+	sync := cfg.Synchronous
+	if sync == "" {
+		sync = "NORMAL"
 	}
-	if cfg.CacheSize != 0 {
-		pragmas = append(pragmas, fmt.Sprintf("_cache_size=%d", cfg.CacheSize))
+	cache := cfg.CacheSize
+	if cache == 0 {
+		cache = -32000
 	}
-
-	pragmas = append(pragmas, "_foreign_keys=ON")
-	pragmas = append(pragmas, "_temp_store=MEMORY")
-
-	if len(pragmas) == 0 {
-		return ""
+	return []sqlite.Pragma{
+		{Name: "busy_timeout", Value: strconv.Itoa(busy)},
+		{Name: "journal_mode", Value: journal},
+		{Name: "journal_size_limit", Value: "200000000"},
+		{Name: "synchronous", Value: sync},
+		{Name: "foreign_keys", Value: "ON"},
+		{Name: "temp_store", Value: "MEMORY"},
+		{Name: "cache_size", Value: strconv.Itoa(cache)},
 	}
-	return "?" + strings.Join(pragmas, "&")
 }
 
 func (db *SQLiteDB) initSchema() error {
