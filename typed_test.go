@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/hanzoai/sqlite"
 
 	"github.com/hanzoai/orm"
 	"github.com/hanzoai/orm/query"
