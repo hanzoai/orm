@@ -13,11 +13,12 @@ import (
 	"strings"
 	"sync"
 
-	// Pure-Go SQLite driver. Drops the CGO requirement that
-	// mattn/go-sqlite3 carried, restoring `CGO_ENABLED=0` static
-	// builds across consumers (IAM, ATS, BD, TA, AML, KMS).
-	// Registers as driver name "sqlite" (not "sqlite3").
-	_ "modernc.org/sqlite"
+	// Pure-Go SQLite driver (github.com/hanzoai/sqlite). Under the
+	// default CGO_ENABLED=0 it embeds the modernc backend and registers
+	// the database/sql driver name "sqlite", so `sql.Open("sqlite", …)`
+	// keeps working while `CGO_ENABLED=0` static builds hold across
+	// consumers (IAM, ATS, BD, TA, AML, KMS).
+	_ "github.com/hanzoai/sqlite"
 )
 
 // SQLiteDBConfig holds configuration for a SQLite database.
@@ -92,20 +93,20 @@ func buildPragmas(cfg SQLiteConfig) string {
 	var pragmas []string
 
 	if cfg.BusyTimeout > 0 {
-		pragmas = append(pragmas, fmt.Sprintf("_busy_timeout=%d", cfg.BusyTimeout))
+		pragmas = append(pragmas, fmt.Sprintf("_pragma=busy_timeout(%d)", cfg.BusyTimeout))
 	}
 	if cfg.JournalMode != "" {
-		pragmas = append(pragmas, fmt.Sprintf("_journal_mode=%s", cfg.JournalMode))
+		pragmas = append(pragmas, fmt.Sprintf("_pragma=journal_mode(%s)", cfg.JournalMode))
 	}
 	if cfg.Synchronous != "" {
-		pragmas = append(pragmas, fmt.Sprintf("_synchronous=%s", cfg.Synchronous))
+		pragmas = append(pragmas, fmt.Sprintf("_pragma=synchronous(%s)", cfg.Synchronous))
 	}
 	if cfg.CacheSize != 0 {
-		pragmas = append(pragmas, fmt.Sprintf("_cache_size=%d", cfg.CacheSize))
+		pragmas = append(pragmas, fmt.Sprintf("_pragma=cache_size(%d)", cfg.CacheSize))
 	}
 
-	pragmas = append(pragmas, "_foreign_keys=ON")
-	pragmas = append(pragmas, "_temp_store=MEMORY")
+	pragmas = append(pragmas, "_pragma=foreign_keys(ON)")
+	pragmas = append(pragmas, "_pragma=temp_store(MEMORY)")
 
 	if len(pragmas) == 0 {
 		return ""
