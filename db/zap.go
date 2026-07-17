@@ -1,14 +1,18 @@
-//go:build never
-// node-based ZAP backend stashed pending zap-proto/go Node port (skipped luxfi/mdns dep)
-
 // ZAP protocol driver for the ORM.
 //
 // ZAP (Zero-Copy App Proto) uses binary encoding over RPC, communicating
 // directly with ZAP-native backends (hanzo/sql, hanzo/kv, hanzo/datastore,
 // hanzo/documentdb). Each backend speaks ZAP natively — no sidecar needed.
-// Structs are encoded directly into the ZAP binary format — no JSON
-// serialization step for storage fields. Complex types (slices, maps,
-// nested structs) are transmitted natively.
+//
+// Transport is github.com/zap-proto/http: a fasthttp-style request/response
+// exchange carried over ZAP length-prefixed frames (encoded by the pure-Go
+// zap-proto/go runtime). This is the same ZAP-HTTP transport the gateway,
+// ingress, and luxd use — one and only one internal transport. The driver
+// speaks it as a client: each backend op is a POST to a path (/query,
+// /get, /set, /find, …) with a JSON body; the response carries a status and
+// a JSON body. Routing is by address (each backend on its own port; see
+// DefaultPorts) and by path — there is no peer-discovery layer, so the ORM
+// takes no mDNS dependency.
 package db
 
 import (
@@ -16,11 +20,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 
-	"github.com/zap-proto/go"
+	"github.com/valyala/fasthttp"
+	zaphttp "github.com/zap-proto/http"
 )
 
 // ZapBackend selects which ZAP-native backend to connect to.
@@ -47,23 +51,6 @@ var DefaultPorts = map[ZapBackend]int{
 	ZapDatastore:  9655,
 }
 
-// ZAP message type IDs (matching native backend handlers).
-const (
-	zapMsgTypeSQL        uint16 = 300
-	zapMsgTypeKV         uint16 = 301
-	zapMsgTypeDatastore  uint16 = 302
-	zapMsgTypeDocumentDB uint16 = 303
-)
-
-// ZAP message field offsets (matching zap-sidecar protocol).
-const (
-	zapFieldPath    = 4  // Text: request path (e.g., "/query", "/get")
-	zapFieldBody    = 12 // Bytes: JSON body
-	zapRespStatus   = 0  // Uint32: HTTP-style status
-	zapRespBody     = 4  // Bytes: response JSON
-	zapRespHeaders  = 8  // Bytes: response headers JSON
-)
-
 // ZapConfig configures a ZAP database connection.
 type ZapConfig struct {
 	// Addr is the backend address (e.g., "localhost:9651").
@@ -80,34 +67,30 @@ type ZapConfig struct {
 	// Defaults to "_entities" for SQL, "entities" for DocumentDB.
 	Collection string
 
-	// NodeID is this client's node ID for ZAP peer identification.
-	NodeID string
-
 	// QueryTimeout is the per-query timeout (default 30s).
 	QueryTimeout time.Duration
-
-	// Logger for ZAP node (optional).
-	Logger *slog.Logger
 }
 
-// ZapDB implements db.DB over ZAP binary protocol.
+// ZapDB implements db.DB over the ZAP-HTTP binary protocol.
 type ZapDB struct {
-	node     *zap.Node
-	cfg      ZapConfig
-	peerID   string // sidecar peer ID (discovered or set)
-	mu       sync.RWMutex
-	closed   bool
-	tenantID string
+	transport *zaphttp.Transport
+	cfg       ZapConfig
+	mu        sync.RWMutex
+	closed    bool
+	tenantID  string
 }
 
-// NewZapDB connects to a ZAP-native backend and returns a DB implementation.
+// NewZapDB dials a ZAP-native backend and returns a DB implementation. The
+// transport connects lazily on the first operation, so this does not fail
+// when the backend is momentarily unreachable — the first Get/Put surfaces a
+// clear dial error instead.
 func NewZapDB(cfg *ZapConfig) (*ZapDB, error) {
 	if cfg.Addr == "" {
-		if port, ok := DefaultPorts[cfg.Backend]; ok {
-			cfg.Addr = fmt.Sprintf("localhost:%d", port)
-		} else {
+		port, ok := DefaultPorts[cfg.Backend]
+		if !ok {
 			return nil, errors.New("db: zap addr required")
 		}
+		cfg.Addr = fmt.Sprintf("localhost:%d", port)
 	}
 	if cfg.Collection == "" {
 		switch cfg.Backend {
@@ -119,89 +102,46 @@ func NewZapDB(cfg *ZapConfig) (*ZapDB, error) {
 			cfg.Collection = "orm"
 		}
 	}
-	if cfg.NodeID == "" {
-		cfg.NodeID = fmt.Sprintf("orm-client-%d", timeNow().UnixNano())
-	}
 	if cfg.QueryTimeout == 0 {
 		cfg.QueryTimeout = 30 * time.Second
 	}
 
-	logger := cfg.Logger
-	if logger == nil {
-		logger = slog.Default()
-	}
-
-	node := zap.NewNode(zap.NodeConfig{
-		NodeID:      cfg.NodeID,
-		Port:        0, // ephemeral port for client
-		NoDiscovery: true,
-		Logger:      logger,
-	})
-
-	if err := node.Start(); err != nil {
-		return nil, fmt.Errorf("db: zap node start: %w", err)
-	}
-
-	// Connect directly to the backend
-	if err := node.ConnectDirect(cfg.Addr); err != nil {
-		node.Stop()
-		return nil, fmt.Errorf("db: zap connect %s: %w", cfg.Addr, err)
-	}
-
-	// The backend's node ID is discovered via handshake
-	peers := node.Peers()
-	if len(peers) == 0 {
-		node.Stop()
-		return nil, fmt.Errorf("db: zap no peers after connect to %s", cfg.Addr)
-	}
+	t := zaphttp.NewTransport(cfg.Addr)
+	t.SetReadTimeout(cfg.QueryTimeout)
 
 	return &ZapDB{
-		node:   node,
-		cfg:    *cfg,
-		peerID: peers[0],
+		transport: t,
+		cfg:       *cfg,
 	}, nil
 }
 
-// call sends a ZAP request to the sidecar and returns the response.
+// call executes one ZAP-HTTP request/response exchange: POST path with a JSON
+// body, returning the response status and body. The transport owns framing
+// and the ZAP wire codec.
 func (z *ZapDB) call(ctx context.Context, path string, body []byte) (uint32, []byte, error) {
-	msgType := z.msgType()
-
-	b := zap.NewBuilder(len(body) + 128)
-	obj := b.StartObject(20)
-	obj.SetText(zapFieldPath, path)
-	obj.SetBytes(zapFieldBody, body)
-	obj.FinishAsRoot()
-	data := b.FinishWithFlags(uint16(msgType) << 8)
-
-	msg, err := zap.Parse(data)
-	if err != nil {
-		return 0, nil, fmt.Errorf("db: zap build msg: %w", err)
+	if err := ctx.Err(); err != nil {
+		return 0, nil, err
 	}
 
-	resp, err := z.node.Call(ctx, z.peerID, msg)
-	if err != nil {
-		return 0, nil, fmt.Errorf("db: zap call: %w", err)
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.SetRequestURI(path)
+	req.Header.SetHost(z.cfg.Addr)
+	req.Header.SetContentType("application/json")
+	req.SetBody(body)
+
+	if err := z.transport.Do(req, resp); err != nil {
+		return 0, nil, fmt.Errorf("db: zap call %s: %w", path, err)
 	}
 
-	root := resp.Root()
-	status := root.Uint32(zapRespStatus)
-	respBody := root.Bytes(zapRespBody)
-	return status, respBody, nil
-}
-
-func (z *ZapDB) msgType() uint16 {
-	switch z.cfg.Backend {
-	case ZapSQL:
-		return zapMsgTypeSQL
-	case ZapKV:
-		return zapMsgTypeKV
-	case ZapDatastore:
-		return zapMsgTypeDatastore
-	case ZapDocumentDB:
-		return zapMsgTypeDocumentDB
-	default:
-		return zapMsgTypeSQL
-	}
+	// The response body is owned by resp, which is released on return; copy it
+	// out so the caller keeps a stable slice.
+	out := append([]byte(nil), resp.Body()...)
+	return uint32(resp.StatusCode()), out, nil
 }
 
 func (z *ZapDB) Get(ctx context.Context, key Key, dst interface{}) error {
@@ -313,7 +253,8 @@ func (z *ZapDB) AllocateIDs(kind string, parent Key, n int) ([]Key, error) {
 }
 
 func (z *ZapDB) RunInTransaction(ctx context.Context, fn func(tx Transaction) error, opts *TransactionOptions) error {
-	// ZAP sidecar delegates transactions to the backend.
+	// The backend owns transaction semantics; the driver runs fn against a
+	// thin transaction view that forwards each op over ZAP.
 	return fn(&zapTransaction{db: z})
 }
 
@@ -324,7 +265,7 @@ func (z *ZapDB) Close() error {
 		return nil
 	}
 	z.closed = true
-	z.node.Stop()
+	z.transport.CloseIdleConnections()
 	return nil
 }
 
@@ -567,10 +508,14 @@ func (q *zapQuery) FilterField(fieldPath string, op string, value interface{}) Q
 	return &nq
 }
 
-func (q *zapQuery) Order(fieldPath string) Query     { nq := *q; nq.order = fieldPath; return &nq }
-func (q *zapQuery) OrderDesc(fieldPath string) Query  { nq := *q; nq.order = "-" + fieldPath; return &nq }
-func (q *zapQuery) Limit(limit int) Query             { nq := *q; nq.limit = limit; return &nq }
-func (q *zapQuery) Offset(offset int) Query           { nq := *q; nq.offset = offset; return &nq }
+func (q *zapQuery) Order(fieldPath string) Query { nq := *q; nq.order = fieldPath; return &nq }
+func (q *zapQuery) OrderDesc(fieldPath string) Query {
+	nq := *q
+	nq.order = "-" + fieldPath
+	return &nq
+}
+func (q *zapQuery) Limit(limit int) Query              { nq := *q; nq.limit = limit; return &nq }
+func (q *zapQuery) Offset(offset int) Query            { nq := *q; nq.offset = offset; return &nq }
 func (q *zapQuery) Project(fieldNames ...string) Query { return q }
 func (q *zapQuery) Distinct() Query                    { return q }
 func (q *zapQuery) Ancestor(ancestor Key) Query        { return q }

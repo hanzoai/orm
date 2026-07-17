@@ -1165,6 +1165,7 @@ func (s *Session) exec(query string, args ...interface{}) (sql.Result, error) {
 	if s.engine.driver == "postgres" {
 		query = convertToPostgres(query)
 	}
+	args = normalizeArgs(args)
 	if s.tx != nil {
 		return s.tx.ExecContext(s.getCtx(), query, args...)
 	}
@@ -1176,6 +1177,7 @@ func (s *Session) query(query string, args ...interface{}) (*sql.Rows, error) {
 	if s.engine.driver == "postgres" {
 		query = convertToPostgres(query)
 	}
+	args = normalizeArgs(args)
 	if s.tx != nil {
 		return s.tx.QueryContext(s.getCtx(), query, args...)
 	}
@@ -1187,10 +1189,32 @@ func (s *Session) queryRow(query string, args ...interface{}) *sql.Row {
 	if s.engine.driver == "postgres" {
 		query = convertToPostgres(query)
 	}
+	args = normalizeArgs(args)
 	if s.tx != nil {
 		return s.tx.QueryRowContext(s.getCtx(), query, args...)
 	}
 	return s.engine.db.QueryRowContext(s.getCtx(), query, args...)
+}
+
+// normalizeArgs canonicalizes bound arguments before they reach the driver.
+// A time.Time is pinned to UTC RFC3339Nano text: this strips the monotonic
+// clock reading that time.Now carries — which the driver would otherwise
+// stringify via %v into an unparseable "2006-01-02 15:04:05 -0700 MST m=+…"
+// value — and fixes one stored representation that scanTime reads back. Every
+// other argument passes through untouched. Applied at this single boundary so
+// there is one and only one place Go values become DB args.
+func normalizeArgs(args []interface{}) []interface{} {
+	for i, a := range args {
+		switch v := a.(type) {
+		case time.Time:
+			args[i] = v.UTC().Format(time.RFC3339Nano)
+		case *time.Time:
+			if v != nil {
+				args[i] = v.UTC().Format(time.RFC3339Nano)
+			}
+		}
+	}
+	return args
 }
 
 // convertToPostgres converts ? placeholders to $N for PostgreSQL

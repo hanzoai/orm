@@ -50,27 +50,21 @@ func OpenSQLite(cfg *ormdb.SQLiteDBConfig) (DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &dbAdapter{db: sdb}, nil
+	return AdaptDB(sdb), nil
 }
 
-// OpenZap creates an orm.DB backed by ZAP binary protocol.
+// OpenZap creates an orm.DB backed by the ZAP binary protocol.
 // Connects directly to a ZAP-native backend (hanzo/sql, hanzo/kv,
-// hanzo/datastore, or hanzo/documentdb). No sidecar needed.
-//
-// TEMPORARILY DISABLED: the underlying db/zap.go uses zap.Node /
-// zap.NewNode which depend on luxfi/mdns. Pending the zap-proto/go
-// Node port (skipped from the initial capnp-free port to keep the
-// stdlib-only invariant). Stub returns an error so callers fail
-// loudly; SQLite-backed paths are unaffected.
+// hanzo/datastore, or hanzo/documentdb) over github.com/zap-proto/http —
+// the same ZAP-HTTP transport the gateway, ingress, and luxd use. No
+// sidecar needed. Mirrors OpenSQLite: construct the driver, adapt it.
 func OpenZap(cfg *ormdb.ZapConfig) (DB, error) {
-	return nil, errZapBackendDisabled
+	zdb, err := ormdb.NewZapDB(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return AdaptDB(zdb), nil
 }
-
-var errZapBackendDisabled = stringErr("orm: ZAP backend temporarily disabled — pending zap-proto/go Node port (uses luxfi/mdns)")
-
-type stringErr string
-
-func (e stringErr) Error() string { return string(e) }
 
 // OpenDocumentDB creates an orm.DB backed by ZAP to hanzo/documentdb.
 // For clients who prefer MongoDB-style document semantics.

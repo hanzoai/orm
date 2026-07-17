@@ -6,7 +6,7 @@ Generics-based ORM for Go, extracted from `hanzoai/commerce`. Replaces 112 model
 
 **Module**: `github.com/hanzoai/orm`
 **Go version**: 1.26.0
-**Dependencies**: `go-sqlite3`, `kv-go/v9` (Valkey/Redis cache), `luxfi/zap` (binary protocol)
+**Dependencies**: `modernc.org/sqlite` (pure-Go, CGO-free), `kv-go/v9` (Valkey/Redis cache), `zap-proto/http` (ZAP-HTTP transport)
 
 ## Package Layout
 
@@ -145,15 +145,29 @@ got, err := orm.Get[User](db, user.Id())
 ```
 
 ### ZAP Binary Protocol Driver (Native — No Sidecar)
-- `db/zap.go` implements db.DB over ZAP binary protocol (luxfi/zap)
-- Connects directly to ZAP-native backends — no sidecar process needed
+- `db/zap.go` implements db.DB over the ZAP binary protocol using
+  `github.com/zap-proto/http` (ZAP-HTTP): a fasthttp-style request/response
+  exchange carried over ZAP length-prefixed frames encoded by the pure-Go
+  `zap-proto/go` runtime. Same transport the gateway, ingress, and luxd use —
+  one and only one internal transport. NO `luxfi/zap` Node / `luxfi/mdns`
+  dependency (that peer-discovery layer is gone), so the ORM stays pure-Go.
+- Connects directly to ZAP-native backends — no sidecar process needed.
+  Routing is by address (each backend on its own port) + path (`/query`,
+  `/get`, `/set`, `/find`, …); each op is a POST with a JSON body.
 - All Hanzo database forks speak ZAP natively on dedicated ports:
-  - `hanzo/sql` (PostgreSQL fork) → port 9651, msg type 300
-  - `hanzo/kv` (Valkey fork) → port 9653, msg type 301
-  - `hanzo/documentdb` (FerretDB fork) → port 9654, msg type 303
-  - `hanzo/datastore` (ClickHouse fork) → port 9655, msg type 302
-- Binary encoding eliminates JSON serialization overhead for storage operations
+  - `hanzo/sql` (PostgreSQL fork) → port 9651
+  - `hanzo/kv` (Valkey fork) → port 9653
+  - `hanzo/documentdb` (FerretDB fork) → port 9654
+  - `hanzo/datastore` (ClickHouse fork) → port 9655
+- Binary encoding eliminates JSON serialization overhead at the transport layer
 - Query builder generates SQL/MongoDB filters depending on backend type
+- `OpenZap` mirrors `OpenSQLite`: `NewZapDB` → `AdaptDB` (one wrap path for
+  every backend). Proven end to end by `zap_adapter_test.go`, which round-trips
+  an entity (create → get → update → delete) over a real in-process
+  `zaphttp.Server` KV backend on a loopback socket.
+- Server-side status: `hanzo/sql`, `hanzo/kv`, `hanzo/datastore` do not yet
+  expose a `zap-proto/http` listener; when they do, the ORM client already
+  speaks the wire (path + JSON body).
 - `adapter.go` convenience constructors:
   - `OpenZap(*ZapConfig)` — generic ZAP connection
   - `OpenDocumentDB(*ZapConfig)` — for "mongo-thinking" clients
