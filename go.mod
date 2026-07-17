@@ -5,11 +5,17 @@ go 1.26.4
 require (
 	github.com/hanzoai/dbx v1.16.0
 	github.com/hanzoai/kv-go/v9 v9.18.0
+	github.com/valyala/fasthttp v1.72.0
+	github.com/zap-proto/http v0.2.0
 )
 
 require (
+	github.com/andybalholm/brotli v1.2.1 // indirect
+	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/mattn/go-sqlite3 v1.14.47 // indirect
-	golang.org/x/crypto v0.50.0 // indirect
+	github.com/valyala/bytebufferpool v1.0.0 // indirect
+	github.com/zap-proto/go v1.1.0 // indirect
+	golang.org/x/crypto v0.53.0 // indirect
 	modernc.org/sqlite v1.48.1 // indirect
 )
 
@@ -23,7 +29,7 @@ require (
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	go.uber.org/atomic v1.11.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/tools v0.43.0 // indirect
 	modernc.org/libc v1.72.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
