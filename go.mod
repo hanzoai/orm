@@ -11,8 +11,12 @@ require (
 
 require (
 	github.com/andybalholm/brotli v1.2.1 // indirect
+	github.com/goccy/go-json v0.10.5 // indirect
+	github.com/golang/snappy v0.0.4 // indirect
+	github.com/hanzoai/builder v0.3.13 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/mattn/go-sqlite3 v1.14.47 // indirect
+	github.com/syndtr/goleveldb v1.0.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/zap-proto/go v1.1.0 // indirect
 	golang.org/x/crypto v0.53.0 // indirect
@@ -25,6 +29,7 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hanzoai/sqlite v0.2.1
+	github.com/hanzoai/xorm v1.4.3
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
