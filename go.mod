@@ -3,7 +3,7 @@ module github.com/hanzoai/orm
 go 1.26.4
 
 require (
-	github.com/hanzoai/dbx v1.16.0
+	github.com/hanzoai/dbx v1.17.1
 	github.com/hanzoai/kv-go/v9 v9.18.0
 	github.com/valyala/fasthttp v1.72.0
 	github.com/zap-proto/http v0.2.0
@@ -17,7 +17,6 @@ require (
 	github.com/hanzoai/csqlite v0.1.0 // indirect
 	github.com/hanzoai/sqlcipher v0.1.0 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
-	github.com/mattn/go-sqlite3 v1.14.47 // indirect
 	github.com/syndtr/goleveldb v1.0.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/zap-proto/go v1.1.0 // indirect
@@ -30,11 +29,10 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hanzoai/sqlite v0.3.2
-	github.com/hanzoai/xorm v1.4.3
-	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/hanzoai/xorm v1.4.4
+	github.com/mattn/go-isatty v0.0.21 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
-	modernc.org/libc v1.72.0 // indirect
 )
