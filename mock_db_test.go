@@ -2,6 +2,7 @@ package orm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -9,10 +10,10 @@ import (
 
 // mockDB is an in-memory DB implementation for testing.
 type mockDB struct {
-	mu       sync.RWMutex
-	store    map[string][]byte // encoded key → JSON bytes
-	idSeq    atomic.Int64
-	closed   bool
+	mu     sync.RWMutex
+	store  map[string][]byte // encoded key → JSON bytes
+	idSeq  atomic.Int64
+	closed bool
 }
 
 func newMockDB() *mockDB {
@@ -38,6 +39,21 @@ func (db *mockDB) Put(_ context.Context, key Key, src interface{}) (Key, error) 
 	defer db.mu.Unlock()
 	db.store[key.Encode()] = nil // simplified
 	return key, nil
+}
+
+func (db *mockDB) CreateIfAbsent(_ context.Context, key Key, src interface{}) (bool, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	k := key.Encode()
+	if _, ok := db.store[k]; ok {
+		return false, nil
+	}
+	data, err := json.Marshal(src)
+	if err != nil {
+		return false, err
+	}
+	db.store[k] = data
+	return true, nil
 }
 
 func (db *mockDB) Delete(_ context.Context, key Key) error {
@@ -99,10 +115,10 @@ type mockKey struct {
 }
 
 func (k *mockKey) Kind() string      { return k.kind }
-func (k *mockKey) StringID() string   { return k.stringID }
-func (k *mockKey) IntID() int64       { return k.intID }
-func (k *mockKey) Parent() Key        { return k.parent }
-func (k *mockKey) Namespace() string  { return k.ns }
+func (k *mockKey) StringID() string  { return k.stringID }
+func (k *mockKey) IntID() int64      { return k.intID }
+func (k *mockKey) Parent() Key       { return k.parent }
+func (k *mockKey) Namespace() string { return k.ns }
 func (k *mockKey) Encode() string {
 	if k.stringID != "" {
 		return fmt.Sprintf("%s/%s", k.kind, k.stringID)

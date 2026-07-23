@@ -119,6 +119,13 @@ func (a *dbAdapter) Put(ctx context.Context, key Key, src interface{}) (Key, err
 	return fromDBKey(k), nil
 }
 
+func (a *dbAdapter) CreateIfAbsent(ctx context.Context, key Key, src interface{}) (bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return a.db.CreateIfAbsent(ctx, toDBKey(key), src)
+}
+
 func (a *dbAdapter) Delete(ctx context.Context, key Key) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -238,6 +245,10 @@ func (t *txAdapter) Put(_ context.Context, key Key, src interface{}) (Key, error
 		return nil, err
 	}
 	return fromDBKey(k), nil
+}
+
+func (t *txAdapter) CreateIfAbsent(_ context.Context, key Key, src interface{}) (bool, error) {
+	return t.tx.CreateIfAbsent(toDBKey(key), src)
 }
 
 func (t *txAdapter) Delete(_ context.Context, key Key) error {
