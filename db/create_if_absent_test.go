@@ -227,6 +227,25 @@ func TestCreateIfAbsent_NoKindFlipOnResurrect(t *testing.T) {
 	}
 }
 
+// TestDocCreateIfAbsent_NonObjectRejected: a src that marshals to a non-object
+// is rejected locally with an error, not a nil-map panic. The guard fires before
+// any network call, so it needs no live document backend.
+func TestDocCreateIfAbsent_NonObjectRejected(t *testing.T) {
+	z, err := NewZapDB(&ZapConfig{Addr: "127.0.0.1:1", Backend: ZapDocumentDB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer z.Close()
+
+	created, err := z.CreateIfAbsent(context.Background(), z.NewKey("k", "id", 0, nil), []int{1, 2, 3})
+	if err == nil {
+		t.Fatal("non-object src: err=nil, want a rejection error")
+	}
+	if created {
+		t.Fatal("non-object src: created=true")
+	}
+}
+
 // TestCreateIfAbsent_TransactionCommit: the tx-scoped path has the same semantics
 // and the created row survives commit.
 func TestCreateIfAbsent_TransactionCommit(t *testing.T) {

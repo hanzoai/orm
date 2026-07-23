@@ -450,10 +450,28 @@ func (z *ZapDB) docPut(ctx context.Context, key Key, src interface{}) (Key, erro
 // unique _id index is the first-writer-wins gate: the winning /insert reports
 // created=true; a duplicate _id (the key already holds a document) reports
 // created=false. An unexpected status is an error, never a created win.
+//
+// src must marshal to a JSON object so the _id/kind envelope fields can be set;
+// a non-object (array/scalar) is rejected rather than panicking on a nil map.
+//
+// Limitation (flagged, untested-here — the backend exposes no listener yet):
+// existence keys on _id alone, so a soft-deleted _id reports created=false while
+// docGet filters deleted, and a different-kind _id does not surface as
+// ErrKindMismatch the way the SQLite path does. The caller preconditions —
+// separate keyspace per kind, normalize before the key — cover both on this
+// backend until it is live-verified.
 func (z *ZapDB) docCreateIfAbsent(ctx context.Context, key Key, src interface{}) (bool, error) {
-	data, _ := json.Marshal(src)
+	data, err := json.Marshal(src)
+	if err != nil {
+		return false, err
+	}
 	var doc map[string]interface{}
-	json.Unmarshal(data, &doc)
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return false, fmt.Errorf("db: zap document create-if-absent: src must be a JSON object: %w", err)
+	}
+	if doc == nil {
+		return false, fmt.Errorf("db: zap document create-if-absent: src must be a JSON object, got null or non-object")
+	}
 	doc["_id"] = key.StringID()
 	doc["kind"] = key.Kind()
 	doc["deleted"] = false
