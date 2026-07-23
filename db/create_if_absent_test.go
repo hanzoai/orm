@@ -147,6 +147,20 @@ func TestCreateIfAbsent_IncompleteKeyRejected(t *testing.T) {
 	}
 }
 
+// TestCreateIfAbsent_EmptyStringIDRejected: NewKey(kind, "", 0, nil) has
+// Incomplete()==false (the stored flag) but Encode()=="" — without the empty
+// guard every empty-id create across all kinds would collide on one id="" row.
+func TestCreateIfAbsent_EmptyStringIDRejected(t *testing.T) {
+	db := newTestDB(t)
+	created, err := db.CreateIfAbsent(context.Background(), db.NewKey("org", "", 0, nil), &testEntity{Name: "x"})
+	if !errors.Is(err, ErrInvalidKey) {
+		t.Fatalf("err = %v, want ErrInvalidKey", err)
+	}
+	if created {
+		t.Fatal("created = true on an empty-stringID key")
+	}
+}
+
 // TestCreateIfAbsent_TransactionCommit: the tx-scoped path has the same semantics
 // and the created row survives commit.
 func TestCreateIfAbsent_TransactionCommit(t *testing.T) {
