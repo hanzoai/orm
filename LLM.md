@@ -58,6 +58,35 @@ orm/
 - Boolean false/zero handled via `COALESCE(json_extract(...), 0) = ?`
 - WAL mode, separate read/write connections, write mutex for serialized writes
 
+### Conditional Insert — `CreateIfAbsent` (race-safe CAS)
+- `CreateIfAbsent(ctx, key, src) (created bool, err error)` on both interface
+  layers (`orm.DB`, `db.DB`) and `db.Transaction`, implemented by every impl
+  (SQLiteDB, sqliteTransaction, ZapDB, zapTransaction, dbAdapter, txAdapter,
+  mockDB). First-writer-wins: `created=true` iff this call inserted the row;
+  `created=false` iff a live row already held the key, left untouched. The
+  non-upsert counterpart to `Put` — it never overwrites a live row, so the
+  winner is immutable and a losing caller reads the existing row back with no
+  lost update and no TOCTOU. `key` must be complete (it is the CAS token).
+- **One definition of existence**: "absent" = no LIVE row. A soft-deleted row
+  resurrects as the new content and reports `created=true`, so `CreateIfAbsent`
+  and `Get` never disagree about whether a key exists.
+- SQLite (reference impl): `INSERT ... ON CONFLICT(id) DO UPDATE SET ... WHERE
+  _entities.deleted=1 RETURNING id`. RETURNING — not RowsAffected — makes the
+  created signal driver-independent. The single statement is atomic under the
+  write mutex, so it is race-safe **with or without** an enclosing transaction.
+- Race-safe on both storage contracts: serialized-writer (SQLite) and autocommit
+  (ZAP/hanzo-sql, where `RunInTransaction` opens no serializing tx). Proven by a
+  64-way concurrent single-winner `-race` test plus an autocommit-contract test
+  that neutralizes the tx wrappers.
+- ZAP dispatches like `Put`: SQL `ON CONFLICT ... RETURNING` over `/query`,
+  Valkey `SET NX`, document unique `_id`. Fail-secure — an unrecognized reply is
+  an error, never a guessed `created=true`. Wire-complete; the backends do not
+  yet expose a listener, so those paths run under the env-gated live test
+  (`ORM_ZAP_SQL_ADDR`), not unit CI.
+- Consumers: constraint-based onboarding CAS — create-org-if-absent (two
+  same-slug signups can't co-tenant one org) and claim-once rows (one trial per
+  identity).
+
 ### ID Generation
 - `GenerateID()` = `UnixNano + atomic counter (mod 10000)` — guaranteed unique in tight loops
 - AllocateIDs returns pre-generated string IDs as sqliteKey.stringID

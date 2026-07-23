@@ -5,6 +5,31 @@ All notable changes to `github.com/hanzoai/orm` are documented here.
 The format is loosely [Keep a Changelog](https://keepachangelog.com/) and
 versioning follows [SemVer](https://semver.org/).
 
+## v0.6.6
+
+### Added
+
+- `DB.CreateIfAbsent(ctx, key, src) (created bool, err error)` — a race-safe,
+  first-writer-wins conditional insert on both the root `orm.DB` and the inner
+  `db.DB` / `db.Transaction` interfaces and every impl (SQLiteDB,
+  sqliteTransaction, ZapDB, zapTransaction, dbAdapter, txAdapter, mockDB).
+  `created=true` iff this call inserted the row; `created=false` iff a live row
+  already held the key, left untouched. The non-upsert counterpart to `Put`: it
+  never overwrites a live row, so the winner is immutable and a losing caller
+  reads the existing row back deterministically — the CAS primitive
+  constraint-based onboarding needs (create-org-if-absent, claim-once rows).
+  - SQLite reference impl: `INSERT ... ON CONFLICT(id) DO UPDATE ... WHERE
+    deleted=1 RETURNING id`. "Absent" means no live row — a soft-deleted row
+    resurrects — so `CreateIfAbsent` and `Get` share one definition of
+    existence. Atomic under the write mutex, hence race-safe with or without an
+    enclosing transaction (serialized-writer AND autocommit contracts).
+  - ZAP backends dispatch like `Put`: SQL `ON CONFLICT ... RETURNING` over
+    `/query`, Valkey `SET NX`, document unique `_id`; fail-secure (an
+    unrecognized reply errors, never a guessed create). Wire-complete; verified
+    by the env-gated live test once a backend listener is reachable.
+
+Unreleased — tag on merge after Red review.
+
 ## v0.5.1 (2026-04-21)
 
 Patch release addressing Red review findings P6-C1, P6-H1, P6-H2, P6-M2,
