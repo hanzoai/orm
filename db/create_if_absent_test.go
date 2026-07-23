@@ -161,6 +161,72 @@ func TestCreateIfAbsent_EmptyStringIDRejected(t *testing.T) {
 	}
 }
 
+// TestCreateIfAbsent_CrossKindErrors: an id already held by a different kind is a
+// keyspace collision. It surfaces as ErrKindMismatch — never a silent
+// created=false that Get (which filters by kind) could not see — and the existing
+// row is untouched.
+func TestCreateIfAbsent_CrossKindErrors(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	if _, err := db.CreateIfAbsent(ctx, db.NewKey("Org", "x", 0, nil), &testEntity{Name: "org"}); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := db.CreateIfAbsent(ctx, db.NewKey("User", "x", 0, nil), &testEntity{Name: "user"})
+	if !errors.Is(err, ErrKindMismatch) {
+		t.Fatalf("cross-kind live: err=%v, want ErrKindMismatch", err)
+	}
+	if created {
+		t.Fatal("cross-kind: created=true")
+	}
+
+	var org testEntity
+	if err := db.Get(ctx, db.NewKey("Org", "x", 0, nil), &org); err != nil || org.Name != "org" {
+		t.Fatalf("Org row changed: %+v err=%v", org, err)
+	}
+	var user testEntity
+	if err := db.Get(ctx, db.NewKey("User", "x", 0, nil), &user); !errors.Is(err, ErrNoSuchEntity) {
+		t.Fatalf("User must be absent (CreateIfAbsent never disagreed with Get): err=%v", err)
+	}
+}
+
+// TestCreateIfAbsent_NoKindFlipOnResurrect: a soft-deleted row of one kind must
+// not resurrect under another kind (no type confusion); only the same kind
+// resurrects it.
+func TestCreateIfAbsent_NoKindFlipOnResurrect(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	orgKey := db.NewKey("Org", "x", 0, nil)
+
+	if _, err := db.CreateIfAbsent(ctx, orgKey, &testEntity{Name: "org"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Delete(ctx, orgKey); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := db.CreateIfAbsent(ctx, db.NewKey("User", "x", 0, nil), &testEntity{Name: "user"})
+	if !errors.Is(err, ErrKindMismatch) {
+		t.Fatalf("soft-deleted cross-kind: err=%v, want ErrKindMismatch (no kind flip)", err)
+	}
+	if created {
+		t.Fatal("kind flip: created=true as User")
+	}
+
+	created, err = db.CreateIfAbsent(ctx, orgKey, &testEntity{Name: "org-again"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created {
+		t.Fatal("same-kind resurrect: created=false, want true")
+	}
+	var got testEntity
+	if err := db.Get(ctx, orgKey, &got); err != nil || got.Name != "org-again" {
+		t.Fatalf("resurrected Org: %+v err=%v", got, err)
+	}
+}
+
 // TestCreateIfAbsent_TransactionCommit: the tx-scoped path has the same semantics
 // and the created row survives commit.
 func TestCreateIfAbsent_TransactionCommit(t *testing.T) {

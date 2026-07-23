@@ -1,10 +1,20 @@
 package orm
 
-import "errors"
+import (
+	"errors"
+
+	ormdb "github.com/hanzoai/orm/db"
+)
 
 var (
 	// ErrNotFound is returned when an entity is not found.
 	ErrNotFound = errors.New("orm: entity not found")
+
+	// ErrKindMismatch is re-exported from the db layer: CreateIfAbsent returns it
+	// when the id is already held by a row of a different kind. One sentinel, so
+	// errors.Is matches whether callers compare against orm.ErrKindMismatch or
+	// ormdb.ErrKindMismatch.
+	ErrKindMismatch = ormdb.ErrKindMismatch
 
 	// ErrAlreadyRegistered is returned when a kind is registered twice.
 	ErrAlreadyRegistered = errors.New("orm: kind already registered")

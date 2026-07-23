@@ -22,12 +22,18 @@ type DB interface {
 
 	// CreateIfAbsent conditionally inserts src under key with first-writer-wins
 	// semantics. It returns created=true iff this call inserted the row (key was
-	// absent); created=false iff a live row already existed under key, which is
-	// left untouched. Unlike Put — an unconditional upsert — CreateIfAbsent never
-	// overwrites a live row, so the winner's content is immutable: a caller that
-	// sees created=false can Get the existing row with no lost update and no
-	// TOCTOU window. Use it for constraint-based CAS such as create-org-if-absent
-	// or a claim-once row. key must be complete; an incomplete key is an error.
+	// absent); created=false iff a live row of the same kind already existed under
+	// key, which is left untouched. Unlike Put — an unconditional upsert —
+	// CreateIfAbsent never overwrites a live row, so the winner's content is
+	// immutable: a caller that sees created=false can Get the existing row with no
+	// lost update and no TOCTOU window. Use it for constraint-based CAS such as
+	// create-org-if-absent or a claim-once row.
+	//
+	// Existence is scoped to (kind, id) and the match is exact. An id already held
+	// by a DIFFERENT kind returns ErrKindMismatch (never a silent created=false
+	// that Get cannot see), so callers must keep each kind in its own stringID
+	// keyspace and normalize the id (case, trim, Unicode) before building the key.
+	// key must be complete with a non-empty id; otherwise the call errors.
 	//
 	// It is atomic on its own — a single conditional insert, no enclosing
 	// transaction required — so it is race-safe under both the serialized-writer

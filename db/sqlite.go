@@ -288,23 +288,52 @@ func (db *SQLiteDB) Put(ctx context.Context, key Key, src interface{}) (Key, err
 }
 
 // createIfAbsentSQL is the first-writer-wins conditional insert for _entities.
-// A fresh id inserts; a conflicting id updates only when the existing row is
-// soft-deleted (resurrection), otherwise the DO UPDATE ... WHERE guard leaves
-// the live row untouched. RETURNING emits the id iff a row was written, which
+// A fresh id inserts; a conflicting id updates only when the existing row is a
+// SAME-KIND soft-deleted row (resurrection), otherwise the DO UPDATE ... WHERE
+// guard leaves it untouched. The guard requires kind = excluded.kind so a
+// soft-deleted row of another kind is never resurrected under a new kind (no
+// type confusion), and kind is deliberately absent from the SET so an existing
+// row's kind is immutable. RETURNING emits the id iff a row was written, which
 // is the created signal — read by createIfAbsentRow. RETURNING is used rather
 // than RowsAffected so the created signal is driver-independent.
 const createIfAbsentSQL = `
 	INSERT INTO _entities (id, kind, parent_id, data, created_at, updated_at, deleted)
 	VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0)
 	ON CONFLICT(id) DO UPDATE SET
-		kind = excluded.kind,
 		parent_id = excluded.parent_id,
 		data = excluded.data,
 		created_at = CURRENT_TIMESTAMP,
 		updated_at = CURRENT_TIMESTAMP,
 		deleted = 0
-	WHERE _entities.deleted = 1
+	WHERE _entities.deleted = 1 AND _entities.kind = excluded.kind
 	RETURNING id`
+
+// rowQuerier is the read surface shared by *sql.DB and *sql.Tx, used to
+// disambiguate a CreateIfAbsent that wrote no row.
+type rowQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row
+}
+
+// checkKindMatch resolves a CreateIfAbsent that wrote no row. Existence is
+// (kind, id) but the id column is a bare primary key, so an id can be squatted
+// by a row of a different kind that Get (which filters by kind) cannot see.
+// Reporting created=false there would strand the caller, so checkKindMatch reads
+// the squatting row's kind under the caller's write lock / transaction and
+// returns ErrKindMismatch when it differs. A same-kind live row is a legitimate
+// created=false (nil). A row that vanished under a concurrent delete is also nil.
+func checkKindMatch(ctx context.Context, q rowQuerier, id, kind string) error {
+	var existing string
+	switch err := q.QueryRowContext(ctx, `SELECT kind FROM _entities WHERE id = ?`, id).Scan(&existing); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil
+	case err != nil:
+		return err
+	case existing != kind:
+		return fmt.Errorf("%w: id %q is held by kind %q, not %q", ErrKindMismatch, id, existing, kind)
+	default:
+		return nil
+	}
+}
 
 // createIfAbsentRow maps the RETURNING row-scan to the created signal: a scanned
 // id means the row was inserted or resurrected (created); sql.ErrNoRows means a
@@ -352,7 +381,7 @@ func createIfAbsentArgs(key Key, src interface{}) (string, []interface{}, error)
 }
 
 func (db *SQLiteDB) CreateIfAbsent(ctx context.Context, key Key, src interface{}) (bool, error) {
-	_, args, err := createIfAbsentArgs(key, src)
+	id, args, err := createIfAbsentArgs(key, src)
 	if err != nil {
 		return false, err
 	}
@@ -360,7 +389,13 @@ func (db *SQLiteDB) CreateIfAbsent(ctx context.Context, key Key, src interface{}
 	db.writeMu.Lock()
 	defer db.writeMu.Unlock()
 
-	return createIfAbsentRow(db.writeDB.QueryRowContext(ctx, createIfAbsentSQL, args...))
+	created, err := createIfAbsentRow(db.writeDB.QueryRowContext(ctx, createIfAbsentSQL, args...))
+	if err != nil || created {
+		return created, err
+	}
+	// No row written under the write lock: a same-kind live row (created=false)
+	// or a different-kind row squatting the id — surface the latter loudly.
+	return false, checkKindMatch(ctx, db.writeDB, id, key.Kind())
 }
 
 func (db *SQLiteDB) Delete(ctx context.Context, key Key) error {
@@ -1159,11 +1194,15 @@ func (t *sqliteTransaction) Put(key Key, src interface{}) (Key, error) {
 }
 
 func (t *sqliteTransaction) CreateIfAbsent(key Key, src interface{}) (bool, error) {
-	_, args, err := createIfAbsentArgs(key, src)
+	id, args, err := createIfAbsentArgs(key, src)
 	if err != nil {
 		return false, err
 	}
-	return createIfAbsentRow(t.tx.QueryRow(createIfAbsentSQL, args...))
+	created, err := createIfAbsentRow(t.tx.QueryRow(createIfAbsentSQL, args...))
+	if err != nil || created {
+		return created, err
+	}
+	return false, checkKindMatch(context.Background(), t.tx, id, key.Kind())
 }
 
 func (t *sqliteTransaction) Delete(key Key) error {
