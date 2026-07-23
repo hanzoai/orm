@@ -67,10 +67,13 @@ func TestCreateIfAbsent_Adapter(t *testing.T) {
 }
 
 // TestCreateIfAbsent_AutocommitContract proves the primitive is race-safe under
-// the autocommit contract: with RunInTransaction* neutralized, N goroutines race
-// to create the same key and exactly one wins, the winner's content survives, and
-// every loser can read it back. This is the property that carries to the ZAP /
-// hanzo-sql backend, where there is no serializing transaction to fall back on.
+// the autocommit contract. Each goroutine calls CreateIfAbsent INSIDE
+// RunInTransactionWith, which autocommitDB neutralizes to a bare pass-through —
+// so the callback runs with no serializing transaction, exactly as it does on the
+// ZAP / hanzo-sql backend. N goroutines race to create the same key; exactly one
+// wins, the winner's content survives, and every loser reads it back. This is the
+// property IAM relies on: a single conditional insert is atomic on its own, so
+// stripping away the transaction wrapper does not open a race.
 func TestCreateIfAbsent_AutocommitContract(t *testing.T) {
 	db := autocommitDB{DB: newTestSQLite(t)}
 	ctx := context.Background()
@@ -86,7 +89,13 @@ func TestCreateIfAbsent_AutocommitContract(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			results[i], errs[i] = db.CreateIfAbsent(ctx, key, &ciaDoc{Name: fmt.Sprintf("racer-%d", i), N: i})
+			// RunInTransactionWith is a no-op pass-through on autocommitDB, so the
+			// conditional insert stands on its own atomicity, not the tx's.
+			errs[i] = db.RunInTransactionWith(ctx, &TxOptions{}, func(tx DB) error {
+				var e error
+				results[i], e = tx.CreateIfAbsent(ctx, key, &ciaDoc{Name: fmt.Sprintf("racer-%d", i), N: i})
+				return e
+			})
 		}(i)
 	}
 	close(start)
