@@ -287,6 +287,70 @@ func (db *SQLiteDB) Put(ctx context.Context, key Key, src interface{}) (Key, err
 	return key, nil
 }
 
+// createIfAbsentSQL is the first-writer-wins conditional insert for _entities.
+// A fresh id inserts; a conflicting id updates only when the existing row is
+// soft-deleted (resurrection), otherwise the DO UPDATE ... WHERE guard leaves
+// the live row untouched. RETURNING emits the id iff a row was written, which
+// is the created signal — read by createIfAbsentRow. RETURNING is used rather
+// than RowsAffected so the created signal is driver-independent.
+const createIfAbsentSQL = `
+	INSERT INTO _entities (id, kind, parent_id, data, created_at, updated_at, deleted)
+	VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0)
+	ON CONFLICT(id) DO UPDATE SET
+		kind = excluded.kind,
+		parent_id = excluded.parent_id,
+		data = excluded.data,
+		created_at = CURRENT_TIMESTAMP,
+		updated_at = CURRENT_TIMESTAMP,
+		deleted = 0
+	WHERE _entities.deleted = 1
+	RETURNING id`
+
+// createIfAbsentRow maps the RETURNING row-scan to the created signal: a scanned
+// id means the row was inserted or resurrected (created); sql.ErrNoRows means a
+// live row already held the key (not created).
+func createIfAbsentRow(row *sql.Row) (bool, error) {
+	var id string
+	switch err := row.Scan(&id); {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil
+	default:
+		return false, err
+	}
+}
+
+// createIfAbsentArgs marshals src and derives the positional args for
+// createIfAbsentSQL, shared by the DB and transaction paths.
+func createIfAbsentArgs(key Key, src interface{}) ([]interface{}, error) {
+	if key == nil || key.Incomplete() {
+		return nil, ErrInvalidKey
+	}
+	data, err := json.Marshal(src)
+	if err != nil {
+		return nil, fmt.Errorf("db: failed to marshal entity: %w", err)
+	}
+	var parentID *string
+	if p := key.Parent(); p != nil {
+		id := p.Encode()
+		parentID = &id
+	}
+	return []interface{}{key.Encode(), key.Kind(), parentID, data}, nil
+}
+
+func (db *SQLiteDB) CreateIfAbsent(ctx context.Context, key Key, src interface{}) (bool, error) {
+	args, err := createIfAbsentArgs(key, src)
+	if err != nil {
+		return false, err
+	}
+
+	db.writeMu.Lock()
+	defer db.writeMu.Unlock()
+
+	return createIfAbsentRow(db.writeDB.QueryRowContext(ctx, createIfAbsentSQL, args...))
+}
+
 func (db *SQLiteDB) Delete(ctx context.Context, key Key) error {
 	if key == nil {
 		return ErrInvalidKey
@@ -1080,6 +1144,14 @@ func (t *sqliteTransaction) Put(key Key, src interface{}) (Key, error) {
 	`, key.Encode(), key.Kind(), parentID, data)
 
 	return key, err
+}
+
+func (t *sqliteTransaction) CreateIfAbsent(key Key, src interface{}) (bool, error) {
+	args, err := createIfAbsentArgs(key, src)
+	if err != nil {
+		return false, err
+	}
+	return createIfAbsentRow(t.tx.QueryRow(createIfAbsentSQL, args...))
 }
 
 func (t *sqliteTransaction) Delete(key Key) error {
