@@ -20,6 +20,20 @@ type DB interface {
 	// Put persists src under key, returning the (possibly updated) key.
 	Put(ctx context.Context, key Key, src interface{}) (Key, error)
 
+	// CreateIfAbsent conditionally inserts src under key with first-writer-wins
+	// semantics. It returns created=true iff this call inserted the row (key was
+	// absent); created=false iff a live row already existed under key, which is
+	// left untouched. Unlike Put — an unconditional upsert — CreateIfAbsent never
+	// overwrites a live row, so the winner's content is immutable: a caller that
+	// sees created=false can Get the existing row with no lost update and no
+	// TOCTOU window. Use it for constraint-based CAS such as create-org-if-absent
+	// or a claim-once row. key must be complete; an incomplete key is an error.
+	//
+	// It is atomic on its own — a single conditional insert, no enclosing
+	// transaction required — so it is race-safe under both the serialized-writer
+	// (SQLite) and autocommit (ZAP) storage contracts.
+	CreateIfAbsent(ctx context.Context, key Key, src interface{}) (created bool, err error)
+
 	// Delete removes the entity identified by key.
 	Delete(ctx context.Context, key Key) error
 
