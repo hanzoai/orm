@@ -138,6 +138,44 @@ func TestCreateIfAbsent_EmptyStringIDRejected(t *testing.T) {
 	}
 }
 
+// TestCreateIfAbsent_CrossKindStrandPrevented is IAM's exact path on the root
+// orm.DB: a User already holds an email id; a TrialClaim on the bare email would
+// collide, and a silent created=false would deny a legitimate first trial. It
+// surfaces as ErrKindMismatch instead, and the precondition-respecting path — a
+// non-overlapping stringID — creates once and refuses the second claim.
+func TestCreateIfAbsent_CrossKindStrandPrevented(t *testing.T) {
+	db := newTestSQLite(t)
+	ctx := context.Background()
+
+	if _, err := db.CreateIfAbsent(ctx, db.NewKey("User", "alice@example.com", 0, nil), &ciaDoc{Name: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := db.CreateIfAbsent(ctx, db.NewKey("TrialClaim", "alice@example.com", 0, nil), &ciaDoc{Name: "claim"})
+	if !errors.Is(err, ErrKindMismatch) {
+		t.Fatalf("bare-email collision: err=%v, want ErrKindMismatch", err)
+	}
+	if created {
+		t.Fatal("created=true on a colliding id")
+	}
+
+	claimKey := db.NewKey("TrialClaim", "trialclaim:alice@example.com", 0, nil)
+	created, err = db.CreateIfAbsent(ctx, claimKey, &ciaDoc{Name: "claim"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created {
+		t.Fatal("non-overlapping trial claim: created=false, want true")
+	}
+	created, err = db.CreateIfAbsent(ctx, claimKey, &ciaDoc{Name: "claim2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created {
+		t.Fatal("second trial claim: created=true, want false (already claimed)")
+	}
+}
+
 // TestCreateIfAbsent_TxAdapter drives the tx-scoped path through the root adapter
 // (RunInTransactionWith → txAdapter.CreateIfAbsent → sqliteTransaction).
 func TestCreateIfAbsent_TxAdapter(t *testing.T) {

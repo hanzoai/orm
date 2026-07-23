@@ -33,6 +33,14 @@ var (
 
 	// ErrEntityNotFound aliases ErrNoSuchEntity.
 	ErrEntityNotFound = ErrNoSuchEntity
+
+	// ErrKindMismatch is returned by CreateIfAbsent when the id is already held
+	// by a row of a DIFFERENT kind. Entity identity is (kind, id); on the SQL
+	// backends the id column is a bare primary key, so two kinds cannot share an
+	// id. That squatting row is invisible to Get (which filters by kind), so
+	// reporting created=false would strand the caller — CreateIfAbsent surfaces
+	// the collision loudly instead. Keep each kind in its own stringID keyspace.
+	ErrKindMismatch = errors.New("db: id held by a different kind")
 )
 
 // Layer represents which database layer to use.
@@ -120,14 +128,23 @@ type DB interface {
 	// sees created=false can Get the existing row with no lost update and no
 	// TOCTOU window.
 	//
-	// "Absent" means no live row. A soft-deleted row (see Delete) is resurrected
-	// as the new content and reported created=true, so CreateIfAbsent and Get
-	// share one definition of existence.
+	// "Absent" means no live row of the SAME kind. A soft-deleted row (see
+	// Delete) of the same kind is resurrected as the new content and reported
+	// created=true, so CreateIfAbsent and Get share one definition of existence.
+	// Resurrection never changes an existing row's kind.
+	//
+	// Existence is scoped to (kind, id). Because the id column is a bare primary
+	// key on the SQL backends, an id already held by a DIFFERENT kind is a
+	// keyspace collision: CreateIfAbsent returns ErrKindMismatch rather than a
+	// silent created=false that Get could not see. Callers must therefore keep
+	// each kind in its own stringID keyspace. CreateIfAbsent is also exact-match
+	// on the stringID: "Acme", "acme" and "acme " are distinct ids, so callers
+	// must normalize (case, trim, Unicode) BEFORE constructing the key.
 	//
 	// The write is atomic at the storage layer — SQLite serializes writers and
 	// the SQL backend applies INSERT ... ON CONFLICT at the row — so for N
 	// concurrent callers on the same absent key exactly one observes created=true.
-	// key must be complete; an incomplete key returns ErrInvalidKey.
+	// key must be complete with a non-empty id; otherwise ErrInvalidKey.
 	CreateIfAbsent(ctx context.Context, key Key, src interface{}) (created bool, err error)
 
 	Delete(ctx context.Context, key Key) error
