@@ -322,25 +322,37 @@ func createIfAbsentRow(row *sql.Row) (bool, error) {
 }
 
 // createIfAbsentArgs marshals src and derives the positional args for
-// createIfAbsentSQL, shared by the DB and transaction paths.
-func createIfAbsentArgs(key Key, src interface{}) ([]interface{}, error) {
+// createIfAbsentSQL, shared by the DB and transaction paths. It returns the
+// encoded id alongside the args so callers can disambiguate a non-create.
+//
+// The Incomplete() guard is not enough on its own: sqliteKey.Incomplete()
+// reports the stored flag, which is false for NewKey(kind, "", 0, nil) — an
+// empty stringID whose Encode() is the empty string. Left unguarded, every
+// empty-id create across all kinds would collide on the single id="" row. The
+// empty check closes that; Encode() after a false Incomplete() is non-mutating
+// in the empty case (it only allocates an id when the incomplete flag is set).
+func createIfAbsentArgs(key Key, src interface{}) (string, []interface{}, error) {
 	if key == nil || key.Incomplete() {
-		return nil, ErrInvalidKey
+		return "", nil, ErrInvalidKey
+	}
+	id := key.Encode()
+	if id == "" {
+		return "", nil, ErrInvalidKey
 	}
 	data, err := json.Marshal(src)
 	if err != nil {
-		return nil, fmt.Errorf("db: failed to marshal entity: %w", err)
+		return "", nil, fmt.Errorf("db: failed to marshal entity: %w", err)
 	}
 	var parentID *string
 	if p := key.Parent(); p != nil {
-		id := p.Encode()
-		parentID = &id
+		pid := p.Encode()
+		parentID = &pid
 	}
-	return []interface{}{key.Encode(), key.Kind(), parentID, data}, nil
+	return id, []interface{}{id, key.Kind(), parentID, data}, nil
 }
 
 func (db *SQLiteDB) CreateIfAbsent(ctx context.Context, key Key, src interface{}) (bool, error) {
-	args, err := createIfAbsentArgs(key, src)
+	_, args, err := createIfAbsentArgs(key, src)
 	if err != nil {
 		return false, err
 	}
@@ -1147,7 +1159,7 @@ func (t *sqliteTransaction) Put(key Key, src interface{}) (Key, error) {
 }
 
 func (t *sqliteTransaction) CreateIfAbsent(key Key, src interface{}) (bool, error) {
-	args, err := createIfAbsentArgs(key, src)
+	_, args, err := createIfAbsentArgs(key, src)
 	if err != nil {
 		return false, err
 	}
