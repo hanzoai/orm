@@ -111,6 +111,25 @@ type DB interface {
 	// Core operations
 	Get(ctx context.Context, key Key, dst interface{}) error
 	Put(ctx context.Context, key Key, src interface{}) (Key, error)
+
+	// CreateIfAbsent conditionally inserts src under key with first-writer-wins
+	// semantics. It returns created=true iff this call inserted the row (key was
+	// absent); created=false iff a live row already existed under key, which is
+	// left untouched. Unlike Put — an unconditional upsert — CreateIfAbsent never
+	// overwrites a live row, so the winner's content is immutable: a caller that
+	// sees created=false can Get the existing row with no lost update and no
+	// TOCTOU window.
+	//
+	// "Absent" means no live row. A soft-deleted row (see Delete) is resurrected
+	// as the new content and reported created=true, so CreateIfAbsent and Get
+	// share one definition of existence.
+	//
+	// The write is atomic at the storage layer — SQLite serializes writers and
+	// the SQL backend applies INSERT ... ON CONFLICT at the row — so for N
+	// concurrent callers on the same absent key exactly one observes created=true.
+	// key must be complete; an incomplete key returns ErrInvalidKey.
+	CreateIfAbsent(ctx context.Context, key Key, src interface{}) (created bool, err error)
+
 	Delete(ctx context.Context, key Key) error
 
 	// Batch operations
@@ -192,6 +211,12 @@ type VectorResult struct {
 type Transaction interface {
 	Get(key Key, dst interface{}) error
 	Put(key Key, src interface{}) (Key, error)
+
+	// CreateIfAbsent is the transaction-scoped conditional insert: the same
+	// first-writer-wins semantics as DB.CreateIfAbsent, participating in the
+	// enclosing transaction.
+	CreateIfAbsent(key Key, src interface{}) (created bool, err error)
+
 	Delete(key Key) error
 	Query(kind string) Query
 

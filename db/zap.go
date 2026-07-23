@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -178,6 +179,37 @@ func (z *ZapDB) Put(ctx context.Context, key Key, src interface{}) (Key, error) 
 	}
 }
 
+// CreateIfAbsent conditionally inserts src under key, first-writer-wins. See
+// db.DB.CreateIfAbsent for the contract. Dispatch mirrors Put: each ZAP-native
+// backend uses its own conditional-insert primitive (SQL ON CONFLICT, Valkey
+// SET NX, document unique _id). The reply decides created; an unrecognized or
+// error reply returns an error rather than a guessed created value, so a caller
+// never mistakes an upsert or a transport failure for a first-writer win.
+//
+// Status: the hanzo ZAP backends do not yet expose a zap-proto/http listener
+// (see LLM.md), so these paths are wire-complete but exercised only by the
+// env-gated live integration test, not unit CI. The SQLite backend is the
+// fully-tested reference implementation of the identical contract.
+func (z *ZapDB) CreateIfAbsent(ctx context.Context, key Key, src interface{}) (bool, error) {
+	if key == nil || key.Incomplete() {
+		return false, ErrInvalidKey
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, z.cfg.QueryTimeout)
+	defer cancel()
+
+	switch z.cfg.Backend {
+	case ZapDocumentDB:
+		return z.docCreateIfAbsent(ctx, key, src)
+	case ZapKV:
+		return z.kvCreateIfAbsent(ctx, key, src)
+	default:
+		return z.sqlCreateIfAbsent(ctx, key, src)
+	}
+}
+
 func (z *ZapDB) Delete(ctx context.Context, key Key) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -311,6 +343,47 @@ func (z *ZapDB) sqlPut(ctx context.Context, key Key, src interface{}) (Key, erro
 	return key, nil
 }
 
+// sqlCreateIfAbsent is the SQL-backend conditional insert. It mirrors the SQLite
+// createIfAbsentSQL: a fresh id inserts, a soft-deleted id resurrects, a live id
+// leaves the DO UPDATE ... WHERE guard unsatisfied. RETURNING id makes the
+// created signal a row-count, read over the same /query row-array envelope
+// sqlGet consumes — so it depends on no new wire contract.
+func (z *ZapDB) sqlCreateIfAbsent(ctx context.Context, key Key, src interface{}) (bool, error) {
+	data, err := json.Marshal(src)
+	if err != nil {
+		return false, err
+	}
+	now := timeNow().Format(time.RFC3339)
+	body, _ := json.Marshal(map[string]interface{}{
+		"sql": fmt.Sprintf(`INSERT INTO %s (id, kind, data, created_at, updated_at, deleted)
+			VALUES ($1, $2, $3, $4, $5, false)
+			ON CONFLICT (id) DO UPDATE SET
+				kind = $2, data = $3, updated_at = $5, deleted = false
+			WHERE %s.deleted = true
+			RETURNING id`, z.cfg.Collection, z.cfg.Collection),
+		"args": []interface{}{key.StringID(), key.Kind(), string(data), now, now},
+	})
+	status, resp, err := z.call(ctx, "/query", body)
+	if err != nil {
+		return false, err
+	}
+	if status != 200 {
+		return false, fmt.Errorf("db: zap sql create-if-absent: status %d", status)
+	}
+	return zapRowsReturned(resp)
+}
+
+// zapRowsReturned reports whether a /query reply carried at least one row — the
+// created signal for INSERT ... ON CONFLICT ... RETURNING. It reuses the row-array
+// envelope sqlGet decodes; an undecodable reply is an error, never a created win.
+func zapRowsReturned(resp []byte) (bool, error) {
+	var rows []map[string]interface{}
+	if err := json.Unmarshal(resp, &rows); err != nil {
+		return false, fmt.Errorf("db: zap create-if-absent: decode reply: %w", err)
+	}
+	return len(rows) > 0, nil
+}
+
 func (z *ZapDB) sqlDelete(ctx context.Context, key Key) error {
 	body, _ := json.Marshal(map[string]interface{}{
 		"sql":  fmt.Sprintf("UPDATE %s SET deleted = true, updated_at = $1 WHERE id = $2 AND kind = $3", z.cfg.Collection),
@@ -367,6 +440,39 @@ func (z *ZapDB) docPut(ctx context.Context, key Key, src interface{}) (Key, erro
 	return key, nil
 }
 
+// docCreateIfAbsent is the document-backend conditional insert. The backend's
+// unique _id index is the first-writer-wins gate: the winning /insert reports
+// created=true; a duplicate _id (the key already holds a document) reports
+// created=false. An unexpected status is an error, never a created win.
+func (z *ZapDB) docCreateIfAbsent(ctx context.Context, key Key, src interface{}) (bool, error) {
+	data, _ := json.Marshal(src)
+	var doc map[string]interface{}
+	json.Unmarshal(data, &doc)
+	doc["_id"] = key.StringID()
+	doc["kind"] = key.Kind()
+	doc["deleted"] = false
+	doc["createdAt"] = timeNow().Format(time.RFC3339)
+	doc["updatedAt"] = timeNow().Format(time.RFC3339)
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"collection": z.cfg.Collection,
+		"documents":  []interface{}{doc},
+	})
+	status, _, err := z.call(ctx, "/insert", body)
+	if err != nil {
+		return false, err
+	}
+	switch status {
+	case fasthttp.StatusOK:
+		return true, nil
+	case fasthttp.StatusConflict:
+		// Duplicate _id — a document already holds the key.
+		return false, nil
+	default:
+		return false, fmt.Errorf("db: zap document create-if-absent: status %d", status)
+	}
+}
+
 func (z *ZapDB) docDelete(ctx context.Context, key Key) error {
 	body, _ := json.Marshal(map[string]interface{}{
 		"collection": z.cfg.Collection,
@@ -404,6 +510,35 @@ func (z *ZapDB) kvPut(ctx context.Context, key Key, src interface{}) (Key, error
 		return nil, err
 	}
 	return key, nil
+}
+
+// kvCreateIfAbsent is the KV-backend conditional insert via Valkey SET ... NX,
+// the KV-native first-writer-wins gate. NX writes only when the key is absent
+// (the KV backend hard-deletes, so absent == not present, no soft-delete case).
+// Valkey replies +OK when the write applied and a null bulk string when NX
+// suppressed it; any other reply is an error, never a created win.
+func (z *ZapDB) kvCreateIfAbsent(ctx context.Context, key Key, src interface{}) (bool, error) {
+	data, _ := json.Marshal(src)
+	kvKey := fmt.Sprintf("%s:%s:%s", z.cfg.Collection, key.Kind(), key.StringID())
+	body, _ := json.Marshal(map[string]interface{}{
+		"cmd":  "SET",
+		"args": []string{kvKey, string(data), "NX"},
+	})
+	status, resp, err := z.call(ctx, "/cmd", body)
+	if err != nil {
+		return false, err
+	}
+	if status != fasthttp.StatusOK {
+		return false, fmt.Errorf("db: zap kv create-if-absent: status %d", status)
+	}
+	switch strings.TrimSpace(string(resp)) {
+	case "OK", `"OK"`, "+OK":
+		return true, nil
+	case "", "nil", "null", "$-1":
+		return false, nil
+	default:
+		return false, fmt.Errorf("db: zap kv create-if-absent: unexpected reply %q", resp)
+	}
 }
 
 func (z *ZapDB) kvDelete(ctx context.Context, key Key) error {
@@ -719,6 +854,12 @@ func (t *zapTransaction) GetForUpdate(key Key, dst interface{}) error {
 
 func (t *zapTransaction) Put(key Key, src interface{}) (Key, error) {
 	return t.db.Put(context.Background(), key, src)
+}
+
+// CreateIfAbsent forwards to the DB; ZAP's transaction model is application-level
+// and the underlying backend owns the conditional-insert atomicity.
+func (t *zapTransaction) CreateIfAbsent(key Key, src interface{}) (bool, error) {
+	return t.db.CreateIfAbsent(context.Background(), key, src)
 }
 
 func (t *zapTransaction) Delete(key Key) error {
