@@ -5,7 +5,19 @@ All notable changes to `github.com/hanzoai/orm` are documented here.
 The format is loosely [Keep a Changelog](https://keepachangelog.com/) and
 versioning follows [SemVer](https://semver.org/).
 
-## v0.6.6
+## v0.6.7
+
+### Added
+
+- `orm.AdaptSQLite(conn *sql.DB) (DB, error)` and `db.AdaptSQLDB(conn *sql.DB)
+  (*SQLiteDB, error)` — layer the ORM's typed-record model over an already-open
+  `*sql.DB` the CALLER owns, instead of opening one from a path. This is the seam
+  for a store whose SQLite file is opened elsewhere (pragma'd, encrypted at rest,
+  single-writer) and handed in as a `*sql.DB`: the ORM manages records in the file
+  without owning the file's lifecycle. The single connection serves reads and
+  writes (serialized by `writeMu` as usual); `initSchema` runs so `_entities`
+  exists; and `Close` is a no-op — the caller closes the connection it opened. A
+  nil connection errors. Additive: `NewSQLiteDB` (open-from-path) is unchanged.
 
 ### Added
 
