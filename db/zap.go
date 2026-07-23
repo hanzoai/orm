@@ -344,10 +344,16 @@ func (z *ZapDB) sqlPut(ctx context.Context, key Key, src interface{}) (Key, erro
 }
 
 // sqlCreateIfAbsent is the SQL-backend conditional insert. It mirrors the SQLite
-// createIfAbsentSQL: a fresh id inserts, a soft-deleted id resurrects, a live id
+// createIfAbsentSQL: a fresh id inserts, a SAME-KIND soft-deleted id resurrects
+// (kind is guarded in the WHERE and never set, so no type confusion), a live id
 // leaves the DO UPDATE ... WHERE guard unsatisfied. RETURNING id makes the
 // created signal a row-count, read over the same /query row-array envelope
 // sqlGet consumes — so it depends on no new wire contract.
+//
+// Whether a different-kind id collision surfaces loudly here depends on the
+// server table's key (an id primary key vs a composite (id, kind)); the caller
+// precondition — keep each kind in its own stringID keyspace — governs it either
+// way. This path is exercised by the env-gated live test, not unit CI.
 func (z *ZapDB) sqlCreateIfAbsent(ctx context.Context, key Key, src interface{}) (bool, error) {
 	data, err := json.Marshal(src)
 	if err != nil {
@@ -358,9 +364,9 @@ func (z *ZapDB) sqlCreateIfAbsent(ctx context.Context, key Key, src interface{})
 		"sql": fmt.Sprintf(`INSERT INTO %s (id, kind, data, created_at, updated_at, deleted)
 			VALUES ($1, $2, $3, $4, $5, false)
 			ON CONFLICT (id) DO UPDATE SET
-				kind = $2, data = $3, updated_at = $5, deleted = false
-			WHERE %s.deleted = true
-			RETURNING id`, z.cfg.Collection, z.cfg.Collection),
+				data = $3, updated_at = $5, deleted = false
+			WHERE %s.deleted = true AND %s.kind = $2
+			RETURNING id`, z.cfg.Collection, z.cfg.Collection, z.cfg.Collection),
 		"args": []interface{}{key.StringID(), key.Kind(), string(data), now, now},
 	})
 	status, resp, err := z.call(ctx, "/query", body)
