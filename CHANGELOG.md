@@ -19,16 +19,27 @@ versioning follows [SemVer](https://semver.org/).
   reads the existing row back deterministically — the CAS primitive
   constraint-based onboarding needs (create-org-if-absent, claim-once rows).
   - SQLite reference impl: `INSERT ... ON CONFLICT(id) DO UPDATE ... WHERE
-    deleted=1 RETURNING id`. "Absent" means no live row — a soft-deleted row
-    resurrects — so `CreateIfAbsent` and `Get` share one definition of
-    existence. Atomic under the write mutex, hence race-safe with or without an
-    enclosing transaction (serialized-writer AND autocommit contracts).
-  - ZAP backends dispatch like `Put`: SQL `ON CONFLICT ... RETURNING` over
-    `/query`, Valkey `SET NX`, document unique `_id`; fail-secure (an
-    unrecognized reply errors, never a guessed create). Wire-complete; verified
-    by the env-gated live test once a backend listener is reachable.
+    deleted=1 AND kind=excluded.kind RETURNING id`. "Absent" means no live
+    SAME-KIND row — a same-kind soft-deleted row resurrects — so `CreateIfAbsent`
+    and `Get` share one definition of existence. Atomic under the write mutex,
+    hence race-safe with or without an enclosing transaction (serialized-writer
+    AND autocommit contracts).
+  - Existence is scoped to `(kind, id)` with an exact-match id. An id already
+    held by a DIFFERENT kind returns the new `ErrKindMismatch` (re-exported as
+    `orm.ErrKindMismatch`) rather than a silent `created=false` that `Get` can't
+    see; resurrection never changes a row's kind. An empty or incomplete
+    stringID returns `ErrInvalidKey`. Callers must keep each kind in its own
+    stringID keyspace and normalize (case/trim/Unicode) before building the key.
+  - ZAP backends dispatch like `Put`: SQL `ON CONFLICT ... RETURNING`
+    (kind-scoped WHERE) over `/query`, Valkey `SET NX`, document unique `_id`;
+    fail-secure (an unrecognized reply errors, never a guessed create).
+    Wire-complete; verified by the env-gated live test once a backend listener
+    is reachable.
 
-Unreleased — tag on merge after Red review.
+Reviewed by Red — race core proven (crux 500x, 64-way resurrection single-winner,
+ctx-cancel no-strand, full interface completeness, fail-secure ZAP). This entry
+folds the follow-up hardening (empty-id guard, (kind,id) scoping + ErrKindMismatch,
+caller preconditions). Unreleased — tag on merge.
 
 ## v0.5.1 (2026-04-21)
 

@@ -63,26 +63,40 @@ orm/
   layers (`orm.DB`, `db.DB`) and `db.Transaction`, implemented by every impl
   (SQLiteDB, sqliteTransaction, ZapDB, zapTransaction, dbAdapter, txAdapter,
   mockDB). First-writer-wins: `created=true` iff this call inserted the row;
-  `created=false` iff a live row already held the key, left untouched. The
-  non-upsert counterpart to `Put` — it never overwrites a live row, so the
+  `created=false` iff a live same-kind row already held the key, left untouched.
+  The non-upsert counterpart to `Put` — it never overwrites a live row, so the
   winner is immutable and a losing caller reads the existing row back with no
-  lost update and no TOCTOU. `key` must be complete (it is the CAS token).
-- **One definition of existence**: "absent" = no LIVE row. A soft-deleted row
-  resurrects as the new content and reports `created=true`, so `CreateIfAbsent`
-  and `Get` never disagree about whether a key exists.
+  lost update and no TOCTOU. `key` must be complete with a non-empty id (it is
+  the CAS token) — an incomplete or empty-stringID key returns `ErrInvalidKey`.
+- **One definition of existence, scoped to (kind, id)**: "absent" = no LIVE row
+  of the same kind. A same-kind soft-deleted row resurrects as the new content
+  and reports `created=true`; resurrection never changes a row's kind. So
+  `CreateIfAbsent` and `Get` (which filters by kind) never disagree.
+- **Preconditions the caller MUST honor** (existence is stringID-scoped, not a
+  full namespace):
+  - **Separate keyspaces per kind.** The `_entities.id` column is a bare PK, so
+    an id held by a DIFFERENT kind is a keyspace collision → `ErrKindMismatch`
+    (loud, never a silent `created=false` that `Get` can't see). Keep each kind
+    in its own stringID keyspace — e.g. IAM uses `trialclaim:<email>` for a
+    claim, not the bare `<email>` that the `User` row already holds.
+  - **Normalize before the key.** Match is exact: `"Acme"`, `"acme"`, `"acme "`
+    are distinct ids → distinct rows (co-tenancy with no race). Callers must
+    lowercase / trim / NFC-normalize the stringID BEFORE constructing the key.
 - SQLite (reference impl): `INSERT ... ON CONFLICT(id) DO UPDATE SET ... WHERE
-  _entities.deleted=1 RETURNING id`. RETURNING — not RowsAffected — makes the
+  _entities.deleted=1 AND _entities.kind=excluded.kind RETURNING id`; on a
+  no-create, a `checkKindMatch` read under the write lock turns a different-kind
+  squatter into `ErrKindMismatch`. RETURNING — not RowsAffected — makes the
   created signal driver-independent. The single statement is atomic under the
   write mutex, so it is race-safe **with or without** an enclosing transaction.
 - Race-safe on both storage contracts: serialized-writer (SQLite) and autocommit
   (ZAP/hanzo-sql, where `RunInTransaction` opens no serializing tx). Proven by a
   64-way concurrent single-winner `-race` test plus an autocommit-contract test
   that neutralizes the tx wrappers.
-- ZAP dispatches like `Put`: SQL `ON CONFLICT ... RETURNING` over `/query`,
-  Valkey `SET NX`, document unique `_id`. Fail-secure — an unrecognized reply is
-  an error, never a guessed `created=true`. Wire-complete; the backends do not
-  yet expose a listener, so those paths run under the env-gated live test
-  (`ORM_ZAP_SQL_ADDR`), not unit CI.
+- ZAP dispatches like `Put`: SQL `ON CONFLICT ... RETURNING` (kind-scoped WHERE)
+  over `/query`, Valkey `SET NX`, document unique `_id`. Fail-secure — an
+  unrecognized reply is an error, never a guessed `created=true`. Wire-complete;
+  the backends do not yet expose a listener, so those paths run under the
+  env-gated live test (`ORM_ZAP_SQL_ADDR`), not unit CI.
 - Consumers: constraint-based onboarding CAS — create-org-if-absent (two
   same-slug signups can't co-tenant one org) and claim-once rows (one trial per
   identity).
