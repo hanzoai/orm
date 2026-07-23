@@ -41,12 +41,42 @@ type SQLiteDBConfig struct {
 
 // SQLiteDB implements the DB interface using SQLite.
 type SQLiteDB struct {
-	config  *SQLiteDBConfig
-	readDB  *sql.DB
-	writeDB *sql.DB
-	writeMu sync.Mutex
-	closed  bool
-	mu      sync.RWMutex
+	config   *SQLiteDBConfig
+	readDB   *sql.DB
+	writeDB  *sql.DB
+	writeMu  sync.Mutex
+	closed   bool
+	borrowed bool // conn is caller-owned (AdaptSQLDB): Close must not close it
+	mu       sync.RWMutex
+}
+
+// AdaptSQLDB layers the ORM's typed-record model (the `_entities` table) over an
+// already-open *sql.DB the CALLER owns. Use it when a store's file is opened
+// elsewhere — cloud's per-org SQLite, for instance, is opened through one seam
+// (cek-encrypted at rest, single-writer, WAL pragmas) and handed to subsystems as a
+// *sql.DB. AdaptSQLDB lets the ORM manage records IN that file without owning the
+// file: the caller keeps the connection's pragmas, encryption, durability, and
+// Close; the ORM only ensures its schema and marshals records.
+//
+// The one connection serves both reads and writes (the caller's pool, typically
+// MaxOpenConns(1) for a serialized single writer), serialized by writeMu exactly as
+// NewSQLiteDB serializes against its dedicated write connection. initSchema runs so
+// `_entities` exists; any table the caller created is untouched. Close is a no-op —
+// the connection belongs to the caller, who closes it.
+func AdaptSQLDB(conn *sql.DB) (*SQLiteDB, error) {
+	if conn == nil {
+		return nil, errors.New("db: AdaptSQLDB requires a non-nil *sql.DB")
+	}
+	db := &SQLiteDB{
+		config:   &SQLiteDBConfig{},
+		readDB:   conn,
+		writeDB:  conn,
+		borrowed: true,
+	}
+	if err := db.initSchema(); err != nil {
+		return nil, fmt.Errorf("db: AdaptSQLDB init schema: %w", err)
+	}
+	return db, nil
 }
 
 // NewSQLiteDB creates a new SQLite database connection.
@@ -220,6 +250,13 @@ func (db *SQLiteDB) Close() error {
 		return nil
 	}
 	db.closed = true
+
+	// A borrowed connection (AdaptSQLDB) is the caller's — readDB and writeDB are
+	// the same handle they opened, so closing here would close their file out from
+	// under them (and double-close it). The caller closes what the caller opened.
+	if db.borrowed {
+		return nil
+	}
 
 	var errs []error
 	if err := db.readDB.Close(); err != nil {
