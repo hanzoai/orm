@@ -2,6 +2,7 @@ package orm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -121,6 +122,19 @@ func TestCreateIfAbsent_AutocommitContract(t *testing.T) {
 	}
 	if want := fmt.Sprintf("racer-%d", winner); got.Name != want {
 		t.Errorf("surviving row = %q, want winner %q", got.Name, want)
+	}
+}
+
+// TestCreateIfAbsent_EmptyStringIDRejected: the empty-stringID guard holds on the
+// root orm.DB path too — the inner ErrInvalidKey propagates through the adapter.
+func TestCreateIfAbsent_EmptyStringIDRejected(t *testing.T) {
+	db := newTestSQLite(t)
+	created, err := db.CreateIfAbsent(context.Background(), db.NewKey("org", "", 0, nil), &ciaDoc{Name: "x"})
+	if !errors.Is(err, ormdb.ErrInvalidKey) {
+		t.Fatalf("err = %v, want ErrInvalidKey", err)
+	}
+	if created {
+		t.Fatal("created = true on an empty-stringID key")
 	}
 }
 
