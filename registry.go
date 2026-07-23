@@ -21,22 +21,22 @@ type typeRegistry struct {
 
 // ModelMeta holds parsed metadata for a registered model type.
 type ModelMeta struct {
-	Kind         string
-	Type         reflect.Type // the concrete struct type T (not *T)
-	StringKey    bool
-	ParentFn     func(DB) Key               // optional parent key factory
-	InitFn       func(DB, interface{})       // optional custom init
-	DefaultsFn   func(interface{})           // optional custom defaults
-	Defaults     map[string]string           // field name → default value from tags
-	Serialized   map[string]string           // JSON field name → underscore field name
-	CacheConfig  *CacheConfig               // per-model cache settings (nil = use global)
+	Kind        string
+	Type        reflect.Type // the concrete struct type T (not *T)
+	StringKey   bool
+	ParentFn    func(DB) Key          // optional parent key factory
+	InitFn      func(DB, interface{}) // optional custom init
+	DefaultsFn  func(interface{})     // optional custom defaults
+	Defaults    map[string]string     // field name → default value from tags
+	Serialized  map[string]string     // JSON field name → underscore field name
+	CacheConfig *CacheConfig          // per-model cache settings (nil = use global)
 }
 
 // CacheConfig controls per-model caching behavior.
 type CacheConfig struct {
-	Enabled    bool
-	EntityTTL  int // seconds, 0 = use global default
-	QueryTTL   int // seconds, 0 = use global default
+	Enabled   bool
+	EntityTTL int // seconds, 0 = use global default
+	QueryTTL  int // seconds, 0 = use global default
 }
 
 // serializedField records a pair of fields for auto-serialization.

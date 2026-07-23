@@ -36,13 +36,13 @@ type Product struct {
 type Order struct {
 	Model[Order]
 
-	Number   string                 `json:"number"`
-	Status   string                 `json:"status" orm:"default:open"`
-	Total    int64                  `json:"total"`
-	Items    []OrderItem            `json:"items" orm:"serialize" datastore:"-"`
-	Items_   string                 `json:"-"`
-	Metadata map[string]interface{} `json:"metadata" orm:"serialize" datastore:"-"`
-	Metadata_ string               `json:"-"`
+	Number    string                 `json:"number"`
+	Status    string                 `json:"status" orm:"default:open"`
+	Total     int64                  `json:"total"`
+	Items     []OrderItem            `json:"items" orm:"serialize" datastore:"-"`
+	Items_    string                 `json:"-"`
+	Metadata  map[string]interface{} `json:"metadata" orm:"serialize" datastore:"-"`
+	Metadata_ string                 `json:"-"`
 }
 
 type OrderItem struct {
@@ -54,9 +54,9 @@ type OrderItem struct {
 type HookedModel struct {
 	Model[HookedModel]
 
-	Name       string `json:"name"`
-	BeforeHit  bool   `json:"-"`
-	AfterHit   bool   `json:"-"`
+	Name      string `json:"name"`
+	BeforeHit bool   `json:"-"`
+	AfterHit  bool   `json:"-"`
 }
 
 func (h *HookedModel) BeforeCreate() error {
@@ -802,4 +802,3 @@ func TestHashQuery(t *testing.T) {
 		t.Error("different queries should produce different hashes")
 	}
 }
-

@@ -135,10 +135,10 @@ func TestSafeHashExpRejectsInjection(t *testing.T) {
 		"id\" UNION SELECT 1--",
 		"1=1--",
 		"col; DROP TABLE users",
-		"col name",       // space
-		"col\x00null",    // NUL
-		"col\nnewline",   // newline
-		"",               // empty
+		"col name",     // space
+		"col\x00null",  // NUL
+		"col\nnewline", // newline
+		"",             // empty
 	}
 	for _, k := range bad {
 		if _, err := orm.SafeHashExp(map[string]any{k: 1}); err == nil {

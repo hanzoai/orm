@@ -6,9 +6,9 @@ import (
 
 func TestParseFilterString(t *testing.T) {
 	tests := []struct {
-		input    string
-		field    string
-		op       string
+		input string
+		field string
+		op    string
 	}{
 		{"Name=", "Name", "="},
 		{"Age>", "Age", ">"},

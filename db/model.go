@@ -63,10 +63,10 @@ type Model struct {
 	Deleted   bool      `json:"deleted,omitempty"`
 	Version   int64     `json:"version,omitempty"`
 
-	Namespace_ string `json:"-"`
-	Mock       bool   `json:"-"`
-	UseStringKey bool `json:"-"`
-	loaded     bool   `json:"-"`
+	Namespace_   string `json:"-"`
+	Mock         bool   `json:"-"`
+	UseStringKey bool   `json:"-"`
+	loaded       bool   `json:"-"`
 }
 
 // Init initializes the model with a database and entity reference.
