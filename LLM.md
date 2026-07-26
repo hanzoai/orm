@@ -201,7 +201,7 @@ got, err := orm.Get[User](db, user.Id())
   - `hanzo/sql` (PostgreSQL fork) → port 9651
   - `hanzo/kv` (Valkey fork) → port 9653
   - `hanzo/documentdb` (FerretDB fork) → port 9654
-  - `hanzo/datastore` (ClickHouse fork) → port 9655
+  - `hanzo/datastore` → port 9655
 - Binary encoding eliminates JSON serialization overhead at the transport layer
 - Query builder generates SQL/MongoDB filters depending on backend type
 - `OpenZap` mirrors `OpenSQLite`: `NewZapDB` → `AdaptDB` (one wrap path for
@@ -228,7 +228,7 @@ Client (Go/TS/Rust/Python)
 hanzo/sql      :9651  ← OLTP (PostgreSQL + pgvector)
 hanzo/kv       :9653  ← Cache/sessions (Valkey)
 hanzo/documentdb :9654  ← Document API (FerretDB → PostgreSQL)
-hanzo/datastore :9655  ← OLAP (ClickHouse)
+hanzo/datastore :9655  ← OLAP (columnar analytics)
 hanzo/base     :9652  ← App framework (collections, auth, realtime)
 ```
 

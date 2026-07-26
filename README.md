@@ -42,7 +42,7 @@ db, err := orm.OpenSQLite(&ormdb.SQLiteDBConfig{
     Config: ormdb.SQLiteConfig{BusyTimeout: 5000, JournalMode: "WAL"},
 })
 
-// ZAP binary protocol (PostgreSQL, MongoDB, Redis, ClickHouse via sidecar)
+// ZAP binary protocol (PostgreSQL, MongoDB, Redis, Hanzo Datastore via sidecar)
 db, err := orm.OpenZap(&ormdb.ZapConfig{
     Addr:    "localhost:9651",
     Backend: ormdb.ZapSQL,        // or ZapDocumentDB, ZapKV, ZapDatastore
@@ -144,14 +144,14 @@ if err := v.Error(); err != nil {
 | PostgreSQL | `orm.OpenZap` + `ZapSQL` | Production SQL via ZAP sidecar |
 | MongoDB/FerretDB | `orm.OpenZap` + `ZapDocumentDB` | Document storage via ZAP sidecar |
 | Redis/Valkey | `orm.OpenZap` + `ZapKV` | KV storage via ZAP sidecar |
-| ClickHouse | `orm.OpenZap` + `ZapDatastore` | Analytics via ZAP sidecar |
+| Hanzo Datastore | `orm.OpenZap` + `ZapDatastore` | Analytics via ZAP sidecar |
 
 ### ZAP Binary Protocol
 
 ZAP eliminates JSON serialization overhead by encoding structs directly into a binary format over RPC. A zap-sidecar process proxies requests to the actual database backends.
 
 ```
-App ──ZAP binary──▸ zap-sidecar ──native──▸ PostgreSQL/MongoDB/Redis/ClickHouse
+App ──ZAP binary──▸ zap-sidecar ──native──▸ PostgreSQL/MongoDB/Redis/Datastore
 ```
 
 Benefits:
