@@ -232,6 +232,72 @@ hanzo/datastore :9655  ← OLAP (ClickHouse)
 hanzo/base     :9652  ← App framework (collections, auth, realtime)
 ```
 
+## Tenant database lifecycle lives HERE — one way, one place
+
+Decided 2026-07-26. The capability is "a tenant's database": open it on demand,
+keep a bounded number hot, evict cold ones, and make it durable in S3 so any node
+can serve any tenant. Today that capability is split in half and neither half is
+complete.
+
+**orm has the contract, not the lifecycle.** `db/db.go` already declares
+user-level and org-level SQLite and carries `TenantID()` / `TenantType()`. There
+is no registry keyed by tenant, no eviction, and no replication.
+
+**commerce has the lifecycle, and it is private and unbounded.**
+`hanzoai/commerce` `db.Manager` holds `userDBs map[string]*SQLiteDB` and
+`orgDBs map[string]*SQLiteDB`, opened on demand — but the maps have no bound and
+handles are only closed by `Manager.Close()`, so file descriptors and memory grow
+with tenant count. It also does NOT import `hanzoai/replicate`, so those tenant
+DBs are local-only.
+
+So per-tenant SQLite exists, and S3-backed SQLite exists (`hanzoai/replicate`:
+WAL shipping, one import, no sidecars, `REPLICATE_S3_ENDPOINT`), and nothing
+does both.
+
+### Why orm and not zip
+
+`zip` is `zap-proto/zip`, an HTTP framework. A tenant's database is not an HTTP
+concern; putting the registry there would braid request routing into storage
+lifecycle and make every non-HTTP caller (jobs, migrations, CLI) reach through a
+web framework to open a file. zip's only job here is carrying tenant identity on
+the request context. orm is the data-access layer and already models tenants, so
+the lifecycle belongs beside the contract it implements.
+
+Layering, each doing one thing:
+
+    zip        -> carries WHICH tenant (request context)
+    orm        -> resolves tenant -> *DB: open, cache, evict          <- the gap
+    replicate  -> makes each tenant file durable (WAL -> S3)
+    app        -> asks orm for a tenant's DB and does not think about any of it
+
+### What to build in orm
+
+A registry that owns the whole lifecycle of a tenant handle:
+
+- **Resolve** `(TenantType, TenantID) -> *DB`, opened on first use.
+- **Materialise on miss.** If the file is not on local disk, restore it from S3
+  before opening. This is the step that makes a node stateless: local disk is a
+  cache, S3 is the source of truth.
+- **Bound and evict.** LRU or idle-TTL with a configured max open. Closing a cold
+  handle must be safe — the file stays, and the next request re-opens or
+  re-fetches it. Without this the "open per project/org" model leaks by design.
+- **Replicate.** Compose `hanzoai/replicate` per handle so every tenant file
+  ships its WAL to S3 continuously, rather than one replicator over one big DB.
+- **KV in front** for hot reads, so eviction churn does not turn into S3 traffic.
+
+Then `commerce/db.Manager` collapses into it — that duplication disappears rather
+than being maintained in two places — and `hanzoai/git` embedding into
+`hanzoai/cloud` gets the same thing for free instead of inventing a third
+version.
+
+### The constraint that does not go away
+
+This makes the *database* horizontally scalable, not the *repositories*. git
+needs POSIX rename-into-place, locking and mmap'd packfiles, which an object
+store does not provide. With per-tenant DBs the honest repo story is sharding on
+the same tenant key, so a node owns a tenant's repos and its DB together. Do not
+let "SQLite is on S3 now" imply repos can be.
+
 ## Remaining Work
 
 - Hashid encoding (commerce/util/hashid → orm/datastore/key/hashid)
