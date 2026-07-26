@@ -79,7 +79,7 @@ func OpenKV(cfg *ormdb.ZapConfig) (DB, error) {
 	return OpenZap(cfg)
 }
 
-// OpenDatastore creates an orm.DB backed by ZAP to hanzo/datastore (ClickHouse).
+// OpenDatastore creates an orm.DB backed by ZAP to hanzo/datastore (OLAP analytics).
 func OpenDatastore(cfg *ormdb.ZapConfig) (DB, error) {
 	cfg.Backend = ormdb.ZapDatastore
 	return OpenZap(cfg)

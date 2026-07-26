@@ -3,7 +3,7 @@
 // - Organization-level SQLite for shared tenant data
 // - PostgreSQL with pgvector for scalable deployments
 // - MongoDB/FerretDB for document storage
-// - Hanzo Datastore (ClickHouse) for deep analytics
+// - Hanzo Datastore for deep analytics
 package db
 
 import (
@@ -49,7 +49,7 @@ type Layer int
 const (
 	LayerUser      Layer = iota // User-specific SQLite database
 	LayerOrg                    // Organization-level SQLite database
-	LayerDatastore              // Hanzo Datastore (ClickHouse) for analytics
+	LayerDatastore              // Hanzo Datastore for analytics
 	LayerAll                    // Query all layers
 )
 
@@ -78,7 +78,7 @@ type SQLiteConfig struct {
 	QueryTimeout time.Duration
 }
 
-// DatastoreConfig holds Hanzo Datastore (ClickHouse) configuration.
+// DatastoreConfig holds Hanzo Datastore configuration.
 type DatastoreConfig struct {
 	MaxOpenConns    int
 	MaxIdleConns    int
@@ -177,7 +177,7 @@ type DB interface {
 	TenantType() string
 }
 
-// AnalyticsStore is the interface for analytics queries (e.g. ClickHouse).
+// AnalyticsStore is the interface for analytics queries (e.g. Hanzo Datastore).
 type AnalyticsStore interface {
 	Query(ctx context.Context, query string, args ...interface{}) (AnalyticsRows, error)
 	Select(ctx context.Context, dest interface{}, query string, args ...interface{}) error
