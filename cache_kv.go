@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	kv "github.com/hanzoai/kv-go/v9"
+	kv "github.com/hanzokv/go/v9"
 )
 
 // KVCache is a Redis/Valkey-backed cache layer using hanzoai/kv-go.
