@@ -279,3 +279,53 @@ func TestRegistryHoldsBoundAboveSampleSize(t *testing.T) {
 		}
 	}
 }
+
+// TestRegistryEvictErrorIsReported pins the seam the durability story rests on.
+//
+// Close() returns a handle's shutdown error to its caller. Eviction has no
+// caller, so it used to discard it — and when OnClose is a final WAL flush to
+// object storage, discarding it means that tenant's writes are gone with no
+// error, no log, and no signal anywhere. Silent data loss on the one path that
+// makes "local disk is a cache, S3 is the truth" true.
+func TestRegistryEvictErrorIsReported(t *testing.T) {
+	flushFailed := errors.New("final flush to object storage failed")
+	var got []Tenant
+	var mu sync.Mutex
+
+	r, _ := fakeRegistry(t, RegistryConfig[DB]{
+		MaxOpen: 1,
+		OnClose: func(Tenant, string, DB) error { return flushFailed },
+		OnEvictError: func(tn Tenant, _ string, err error) {
+			if !errors.Is(err, flushFailed) {
+				t.Errorf("reported %v, want the OnClose error", err)
+			}
+			mu.Lock()
+			got = append(got, tn)
+			mu.Unlock()
+		},
+	})
+
+	ctx := context.Background()
+	_ = r.Do(ctx, Tenant{Type: "org", ID: "first"}, func(DB) error { return nil })
+	_ = r.Do(ctx, Tenant{Type: "org", ID: "second"}, func(DB) error { return nil }) // evicts "first"
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 1 {
+		t.Fatalf("OnEvictError called %d times, want 1 — an evicted handle that failed to flush must be reported", len(got))
+	}
+	if got[0].ID != "first" {
+		t.Errorf("reported tenant %q, want the evicted one", got[0].ID)
+	}
+}
+
+// A nil OnEvictError must not panic — silence is a choice, not a crash.
+func TestRegistryEvictErrorNilHookIsSafe(t *testing.T) {
+	r, _ := fakeRegistry(t, RegistryConfig[DB]{
+		MaxOpen: 1,
+		OnClose: func(Tenant, string, DB) error { return errors.New("boom") },
+	})
+	ctx := context.Background()
+	_ = r.Do(ctx, Tenant{Type: "org", ID: "a"}, func(DB) error { return nil })
+	_ = r.Do(ctx, Tenant{Type: "org", ID: "b"}, func(DB) error { return nil })
+}
