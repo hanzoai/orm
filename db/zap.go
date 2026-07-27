@@ -110,7 +110,7 @@ func NewZapDB(cfg *ZapConfig) (*ZapDB, error) {
 		cfg.QueryTimeout = 30 * time.Second
 	}
 
-	t := zaphttp.NewTransport(cfg.Addr)
+	t := zaphttp.Dial("tcp", cfg.Addr)
 	t.SetReadTimeout(cfg.QueryTimeout)
 
 	return &ZapDB{
