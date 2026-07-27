@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -209,6 +210,30 @@ func NewNamespaces[T io.Closer](cfg NamespacesConfig[T]) (*Namespaces[T], error)
 // idle for an hour, or freshly used when it is not.
 func (r *Namespaces[T]) now() int64 { return int64(time.Since(r.epoch)) }
 
+// canonical returns the one spelling of n this package will use as a map key.
+//
+// A namespace must begin with a letter. That single rule rejects the absolute
+// form, the dot-relative form and the empty name together, so "/org/acme" is
+// not a namespace rather than a second name for one. Cleaning first and then
+// applying the rule also rejects a name that only reaches outside after the
+// dot-segments resolve, such as "a/../../b".
+//
+// Canonicalising matters as much as rejecting: "org//acme" and "org/acme/" name
+// one file but are three distinct strings. Keyed raw, they would open that file
+// under three entries and replicate one history from three streams. Keyed here,
+// they are one namespace.
+func canonical(n Namespace) (Namespace, error) {
+	c := Namespace(path.Clean(string(n)))
+	if c == "" || !isLetter(rune(c[0])) {
+		return "", fmt.Errorf("db: namespace %q must begin with a letter", n)
+	}
+	return c, nil
+}
+
+func isLetter(r rune) bool {
+	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z'
+}
+
 // pathFor returns n's file under dir. Containment is structural rather than a
 // rule about names: the cleaned join must still sit under dir, so no namespace
 // can address a file outside the cache however it is spelled. Checking the
@@ -249,8 +274,9 @@ func (r *Namespaces[T]) With(ctx context.Context, t Namespace, fn func(T) error)
 }
 
 func (r *Namespaces[T]) acquire(ctx context.Context, t Namespace) (*entry[T], error) {
-	if t == "" {
-		return nil, errors.New("db: empty namespace")
+	t, err := canonical(t)
+	if err != nil {
+		return nil, err
 	}
 	e, fresh, err := r.claim(t)
 	if err != nil {
