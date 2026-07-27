@@ -35,8 +35,7 @@ type SQLiteDBConfig struct {
 	Config             SQLiteConfig
 	EnableVectorSearch bool
 	VectorDimensions   int
-	TenantID           string
-	TenantType         string
+	Namespace          string
 }
 
 // SQLiteDB implements the DB interface using SQLite.
@@ -238,9 +237,6 @@ func (db *SQLiteDB) initVectorSearch() error {
 
 	return nil
 }
-
-func (db *SQLiteDB) TenantID() string   { return db.config.TenantID }
-func (db *SQLiteDB) TenantType() string { return db.config.TenantType }
 
 func (db *SQLiteDB) Close() error {
 	db.mu.Lock()
@@ -694,7 +690,7 @@ func (db *SQLiteDB) NewKey(kind string, stringID string, intID int64, parent Key
 		stringID:  stringID,
 		intID:     intID,
 		parent:    parent,
-		namespace: db.config.TenantID,
+		namespace: db.config.Namespace,
 	}
 }
 
@@ -702,7 +698,7 @@ func (db *SQLiteDB) NewIncompleteKey(kind string, parent Key) Key {
 	return &sqliteKey{
 		kind:       kind,
 		parent:     parent,
-		namespace:  db.config.TenantID,
+		namespace:  db.config.Namespace,
 		incomplete: true,
 	}
 }
@@ -714,7 +710,7 @@ func (db *SQLiteDB) AllocateIDs(kind string, parent Key, n int) ([]Key, error) {
 			kind:      kind,
 			stringID:  GenerateID(),
 			parent:    parent,
-			namespace: db.config.TenantID,
+			namespace: db.config.Namespace,
 		}
 	}
 	return keys, nil
@@ -918,7 +914,7 @@ func (q *sqliteQuery) GetAll(ctx context.Context, dst interface{}) ([]Key, error
 		}
 
 		keys = append(keys, &sqliteKey{
-			kind: q.kind, stringID: id, namespace: q.db.config.TenantID,
+			kind: q.kind, stringID: id, namespace: q.db.config.Namespace,
 		})
 	}
 
@@ -951,7 +947,7 @@ func (q *sqliteQuery) First(ctx context.Context, dst interface{}) (Key, error) {
 	}
 
 	return &sqliteKey{
-		kind: q.kind, stringID: id, namespace: q.db.config.TenantID,
+		kind: q.kind, stringID: id, namespace: q.db.config.Namespace,
 	}, nil
 }
 
@@ -998,7 +994,7 @@ func (q *sqliteQuery) Keys(ctx context.Context) ([]Key, error) {
 			return nil, err
 		}
 		keys = append(keys, &sqliteKey{
-			kind: q.kind, stringID: id, namespace: q.db.config.TenantID,
+			kind: q.kind, stringID: id, namespace: q.db.config.Namespace,
 		})
 	}
 	return keys, rows.Err()
@@ -1016,7 +1012,7 @@ func (q *sqliteQuery) Run(ctx context.Context) Iterator {
 	}
 
 	return &sqliteIterator{
-		rows: rows, err: err, kind: q.kind, namespace: q.db.config.TenantID,
+		rows: rows, err: err, kind: q.kind, namespace: q.db.config.Namespace,
 	}
 }
 
