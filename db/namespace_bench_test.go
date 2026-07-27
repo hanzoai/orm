@@ -170,51 +170,78 @@ func BenchmarkRegistryEvictionThrash(b *testing.B) {
 	}
 }
 
-// BenchmarkRegistryHitRateWithMaterialize is the same workload with a
-// Materialize configured, i.e. the production regime where a miss is a restore
-// from object storage. It must show the exhaustive miss rate, not the sampled
-// one — that is the switch doing its job.
-func BenchmarkRegistryHitRateWithMaterialize(b *testing.B) {
+// BenchmarkRegistryHitRate measures what every other benchmark here cannot:
+// how often the registry throws away a handle it should have kept.
+//
+// The rest of this file reports ns/op, and that is precisely how sampled
+// eviction hid. Sampling IS faster per eviction; what it costs is accuracy —
+// it evicts a hot handle whenever the true coldest was not in the sample — and
+// the price of that shows up as a later miss, in a different operation, which
+// a latency average absorbs. So this reports miss% as a custom metric.
+//
+// The two regimes are the point of the comparison, and they must be read
+// together:
+//
+//	materialize=off  a miss is a local open        -> sampling is worth it
+//	materialize=on   a miss is a restore from S3   -> sampling inverts
+//
+// Zipf-ish 90/10: nine in ten requests land in a hot set of 102 tenants out of
+// 1024, against MaxOpen 128. Deterministic xorshift so the two regimes see the
+// identical request stream and the miss counts are directly comparable.
+func BenchmarkRegistryHitRate(b *testing.B) {
 	const (
 		spaces  = 1024
 		hot     = 102
 		maxOpen = 128
 		ops     = 50000
 	)
-	var opens int64
-	r, err := NewNamespaces(NamespacesConfig[*fakeDB]{
-		Dir:     b.TempDir(),
-		MaxOpen: maxOpen,
-		// Present, and trivial: this benchmark measures the miss COUNT, and a
-		// real S3 GET here would only add noise to a number we already know how
-		// to price (~30ms each).
-		Materialize: func(context.Context, Namespace, string) error { return nil },
-		Open: func(t Namespace, path string) (*fakeDB, error) {
-			atomic.AddInt64(&opens, 1)
-			return &fakeDB{tenant: t}, nil
-		},
-	})
-	if err != nil {
-		b.Fatal(err)
-	}
-	defer r.Close()
+	// A Materialize that does nothing. Its PRESENCE is the whole variable —
+	// it is what tells the registry a miss is expensive. Doing real work here
+	// would only add noise to a number we already know how to price (~30ms a
+	// GET), and the count is what this measures.
+	present := func(context.Context, Namespace, string) error { return nil }
 
-	ctx := context.Background()
-	seed := uint64(12345)
-	next := func() uint64 { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; return seed }
-
-	b.ResetTimer()
-	for n := 0; n < b.N; n++ {
-		atomic.StoreInt64(&opens, 0)
-		for i := 0; i < ops; i++ {
-			var id uint64
-			if next()%10 < 9 {
-				id = next() % hot
-			} else {
-				id = next() % spaces
+	for _, regime := range []struct {
+		name        string
+		materialize func(context.Context, Namespace, string) error
+	}{
+		{"materialize=off", nil},
+		{"materialize=on", present},
+	} {
+		b.Run(regime.name, func(b *testing.B) {
+			var opens int64
+			r, err := NewNamespaces(NamespacesConfig[*fakeDB]{
+				Dir:         b.TempDir(),
+				MaxOpen:     maxOpen,
+				Materialize: regime.materialize,
+				Open: func(t Namespace, path string) (*fakeDB, error) {
+					atomic.AddInt64(&opens, 1)
+					return &fakeDB{tenant: t}, nil
+				},
+			})
+			if err != nil {
+				b.Fatal(err)
 			}
-			_ = r.With(ctx, Namespace("org/"+fmt.Sprint(id)), func(*fakeDB) error { return nil })
-		}
-		b.ReportMetric(float64(atomic.LoadInt64(&opens))*100/float64(ops), "miss%")
+			defer r.Close()
+
+			ctx := context.Background()
+			seed := uint64(12345)
+			next := func() uint64 { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; return seed }
+
+			b.ResetTimer()
+			for n := 0; n < b.N; n++ {
+				atomic.StoreInt64(&opens, 0)
+				for i := 0; i < ops; i++ {
+					var id uint64
+					if next()%10 < 9 {
+						id = next() % hot
+					} else {
+						id = next() % spaces
+					}
+					_ = r.With(ctx, Namespace("org/"+fmt.Sprint(id)), func(*fakeDB) error { return nil })
+				}
+				b.ReportMetric(float64(atomic.LoadInt64(&opens))*100/float64(ops), "miss%")
+			}
+		})
 	}
 }
