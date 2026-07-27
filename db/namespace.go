@@ -74,8 +74,6 @@ type Namespaces[T io.Closer] struct {
 	swept atomic.Int64
 }
 
-// Namespace identifies one database. Type separates keyspaces that may share an
-// id — a user and an org called "acme" are different tenants.
 // Namespace names one database, e.g. "org/acme" or "user/123/notes". It is
 // opaque here: a path component and an eviction key, nothing more. What
 // qualifies a namespace is hanzoai/iam's business, and this package never
