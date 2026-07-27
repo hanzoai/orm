@@ -169,3 +169,52 @@ func BenchmarkRegistryEvictionThrash(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkRegistryHitRateWithMaterialize is the same workload with a
+// Materialize configured, i.e. the production regime where a miss is a restore
+// from object storage. It must show the exhaustive miss rate, not the sampled
+// one — that is the switch doing its job.
+func BenchmarkRegistryHitRateWithMaterialize(b *testing.B) {
+	const (
+		tenants = 1024
+		hot     = 102
+		maxOpen = 128
+		ops     = 50000
+	)
+	var opens int64
+	r, err := NewRegistry(RegistryConfig[*fakeDB]{
+		Dir:     b.TempDir(),
+		MaxOpen: maxOpen,
+		// Present, and trivial: this benchmark measures the miss COUNT, and a
+		// real S3 GET here would only add noise to a number we already know how
+		// to price (~30ms each).
+		Materialize: func(context.Context, Tenant, string) error { return nil },
+		Open: func(t Tenant, path string) (*fakeDB, error) {
+			atomic.AddInt64(&opens, 1)
+			return &fakeDB{tenant: t}, nil
+		},
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer r.Close()
+
+	ctx := context.Background()
+	seed := uint64(12345)
+	next := func() uint64 { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; return seed }
+
+	b.ResetTimer()
+	for n := 0; n < b.N; n++ {
+		atomic.StoreInt64(&opens, 0)
+		for i := 0; i < ops; i++ {
+			var id uint64
+			if next()%10 < 9 {
+				id = next() % hot
+			} else {
+				id = next() % tenants
+			}
+			_ = r.Do(ctx, Tenant{Type: "org", ID: fmt.Sprint(id)}, func(*fakeDB) error { return nil })
+		}
+		b.ReportMetric(float64(atomic.LoadInt64(&opens))*100/float64(ops), "miss%")
+	}
+}
