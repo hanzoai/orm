@@ -5,6 +5,31 @@ All notable changes to `github.com/hanzoai/orm` are documented here.
 The format is loosely [Keep a Changelog](https://keepachangelog.com/) and
 versioning follows [SemVer](https://semver.org/).
 
+## v0.6.10
+
+### Added
+
+- `github.com/hanzoai/orm/replicated` (`replicated/v0.1.0`) — the tenant
+  registry's files made durable. `replicated.Registry(cfg)` is `db.NewRegistry`
+  with the three durability seams filled in by `hanzoai/replicate`: `OnOpen`
+  starts a WAL stream for THAT tenant file at `<base>/<type>/<id>`, `OnClose`
+  flushes and stops it, `Materialize` restores the file when a node is asked for
+  a tenant it does not have on disk. One stream per FILE, never one over the
+  directory — per-file lifetime is what lets a node evict a tenant and any other
+  node re-materialise it.
+  - It is a **separate module** so `orm`'s dependency graph is unchanged:
+    `hanzoai/replicate` brings the AWS/GCS/Azure SDKs with it and only the
+    consumers that want durability should pay for them.
+  - Configuration is `REPLICATE_S3_ENDPOINT` and friends, or an explicit
+    `RemoteURL` (any replica URL: `s3://`, `file://`, …). With neither set it
+    degrades to the current local-only registry rather than failing, so a laptop
+    and a cluster construct it the same way. Encryption is fail-closed: a
+    configured destination with no `REPLICATE_AGE_RECIPIENT` fails the tenant
+    open instead of streaming customer data in the clear.
+  - Requires `hanzoai/replicate` v0.9.6, whose new `Stream`/`Restore`/
+    `ReplicaURL` entry points make the destination a per-file value instead of a
+    process-wide environment variable.
+
 ## v0.6.9
 
 ### Changed
