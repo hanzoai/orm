@@ -6,7 +6,7 @@ Generics-based ORM for Go, extracted from `hanzoai/commerce`. Replaces 112 model
 
 **Module**: `github.com/hanzoai/orm`
 **Go version**: 1.26.0
-**Dependencies**: `modernc.org/sqlite` (pure-Go, CGO-free), `kv-go/v9` (Valkey/Redis cache), `zap-proto/http` (ZAP-HTTP transport)
+**Dependencies**: `modernc.org/sqlite` (pure-Go, CGO-free), `kv-go/v9` (Valkey/Redis cache), `zap-proto/http` (ZAP-HTTP transport), `hanzo-ds/go` (analytics warehouse — reached only by `datastore/`)
 
 ## Package Layout
 
@@ -35,9 +35,12 @@ orm/
 │   ├── model.go        db.Model base type (non-generic, with hooks and CRUD lifecycle)
 │   ├── zap.go          ZAP binary protocol driver (native: SQL/DocumentDB/KV/Datastore)
 │   ├── manager.go      Multi-tenant Manager (RegisterUserDB/RegisterOrgDB)
+│   ├── registry.go     Registry — tenant → DB: open on demand, bound, evict
 │   └── time.go         Testable timeNow var
 ├── replicated/         SEPARATE MODULE — durable tenant registry (see below)
 │   └── replicated.go   Registry[T]: binds Materialize/OnOpen/OnClose to hanzoai/replicate
+├── datastore/          Analytics plane — Hanzo Datastore (columnar warehouse)
+│   └── datastore.go    Config, Env, Open, Conn.{Ready,Wait,Exec,Query,Close}
 ├── val/                Validation
 │   ├── val.go          Validator, CheckContext, CheckString, ValidatePassword
 │   └── errors.go       Error, FieldError, NewError, NewFieldError
@@ -47,6 +50,37 @@ orm/
 ```
 
 ## Key Architecture Decisions
+
+### Two Planes — entities and measurements
+
+Two stores, two protocols, one repo. Do not braid them.
+
+| | relational plane (`db`) | analytics plane (`datastore`) |
+|---|---|---|
+| holds | entities | measurements |
+| a tenant is | a whole database file | a column, and the leading sort key |
+| isolation | structural — separate files via `db.Registry` | a bound predicate on a shared table |
+| cross-tenant read | impossible | routine, and the point (fleet aggregates) |
+| SQL | generated from typed queries | written by hand (aggregates, windows, engine DDL) |
+| transport | SQLite file / ZAP | warehouse native protocol (`hanzo-ds/go`) |
+
+`db` declares the contract (`db.Datastore`); `datastore.Conn` implements it.
+There is no import edge between them — Go's interfaces are structural, so the
+satisfaction is asserted in `datastore`'s test instead. That is deliberate: the
+warehouse driver costs 252 packages (OpenTelemetry, a geospatial library, four
+compressors), and putting it in `db` would charge every SQLite consumer for it.
+Measured, and it holds: `orm` 271 packages, `orm/db` 217, unchanged by adding
+the plane; `orm/datastore` 252, paid only by callers that want analytics.
+
+**Raw SQL, and where it lives.** On the analytics plane raw SQL *is* the API —
+`Conn.Exec`/`Conn.Query`. On the relational plane there is no raw escape hatch
+on `db.DB`, on purpose: that interface is implemented by ZAP and document
+backends where SQL is meaningless. A caller that needs raw SQL on a tenant's
+database opens the `*sql.DB` itself and hands it to `AdaptSQLDB`, which layers
+records over a connection the caller keeps — one connection serving both the
+typed and raw paths, with the `Registry` still deciding when the file is open
+(wire it through `RegistryConfig.Open`, close it in `OnClose`). Proven by
+`db/registry_raw_test.go`.
 
 ### Two Interface Layers
 - **Root orm.DB/Key/Query** — minimal interfaces for Model[T] (simpler Query with ById/KeyExists)
@@ -199,11 +233,11 @@ got, err := orm.Get[User](db, user.Id())
 - Connects directly to ZAP-native backends — no sidecar process needed.
   Routing is by address (each backend on its own port) + path (`/query`,
   `/get`, `/set`, `/find`, …); each op is a POST with a JSON body.
-- All Hanzo database forks speak ZAP natively on dedicated ports:
-  - `hanzo/sql` (PostgreSQL fork) → port 9651
-  - `hanzo/kv` (Valkey fork) → port 9653
-  - `hanzo/documentdb` (FerretDB fork) → port 9654
-  - `hanzo/datastore` → port 9655
+- Every Hanzo database speaks ZAP natively on a dedicated port:
+  - `hanzo/sql` (relational, transactional) → port 9651
+  - `hanzo/kv` (cache, sessions) → port 9653
+  - `hanzo/documentdb` (document semantics over `hanzo/sql`) → port 9654
+  - `hanzo/datastore` (columnar analytics) → port 9655
 - Binary encoding eliminates JSON serialization overhead at the transport layer
 - Query builder generates SQL/MongoDB filters depending on backend type
 - `OpenZap` mirrors `OpenSQLite`: `NewZapDB` → `AdaptDB` (one wrap path for
