@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -59,7 +60,16 @@ type Tenant struct {
 
 func (t Tenant) String() string { return t.Type + "/" + t.ID }
 
-func (t Tenant) valid() bool { return t.Type != "" && t.ID != "" }
+// valid reports whether a tenant names a database. Type and ID become path
+// segments in two places — a file under Dir locally, a key prefix remotely — so
+// a separator or a dot-segment in either lets one tenant address another
+// tenant's file, or something outside the tree entirely. A tenant id is a name,
+// not a path.
+func (t Tenant) valid() bool { return validSegment(t.Type) && validSegment(t.ID) }
+
+func validSegment(s string) bool {
+	return s != "" && s != "." && s != ".." && !strings.ContainsAny(s, `/\`)
+}
 
 // RegistryConfig configures how tenant databases are located, opened and bounded.
 type RegistryConfig[T io.Closer] struct {
