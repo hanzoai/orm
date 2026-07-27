@@ -8,7 +8,7 @@ import (
 // SerializeFields marshals all registered serialized fields (Foo → Foo_).
 // Called automatically before Put().
 //
-// For each pair in ModelMeta.Serialized:
+// For each pair in Meta.Serialized:
 //   - Marshal the JSON field value to a JSON string
 //   - Store the string in the underscore field
 func SerializeFields(entity interface{}) error {
@@ -46,7 +46,7 @@ func SerializeFields(entity interface{}) error {
 // DeserializeFields unmarshals all registered serialized fields (Foo_ → Foo).
 // Called automatically after Get/GetById.
 //
-// For each pair in ModelMeta.Serialized:
+// For each pair in Meta.Serialized:
 //   - Read the string from the underscore field
 //   - Unmarshal into the JSON field
 func DeserializeFields(entity interface{}) error {

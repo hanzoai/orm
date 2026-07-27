@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// Registry resolves a tenant to its database.
+// Namespaces resolves a tenant to its database.
 //
 // The model is one SQLite file per tenant, S3 as the source of truth, and local
 // disk as a cache. A node holds a bounded number of tenant databases open,
@@ -33,17 +33,17 @@ import (
 // the caller's business. That separation is load-bearing: pinning T to this
 // package's DB would force every owner of per-tenant files to adopt this
 // package's entity API as well, which is exactly the toll that made commerce
-// write its own lifecycle instead of reusing this one. Use Registry[DB] here,
-// Registry[yourDB] there, one implementation either way.
+// write its own lifecycle instead of reusing this one. Use Namespaces[DB] here,
+// Namespaces[yourDB] there, one implementation either way.
 //
 // Layering, one job each:
 //
 //	transport  carries WHICH tenant (request context)
-//	Registry   resolves tenant -> handle: open, cache, evict   <- here
+//	Namespaces   resolves tenant -> handle: open, cache, evict   <- here
 //	Replicate  makes each tenant file durable (WAL -> S3)
 //	caller     asks for a tenant's database and thinks about none of it
-type Registry[T io.Closer] struct {
-	cfg RegistryConfig[T]
+type Namespaces[T io.Closer] struct {
+	cfg NamespacesConfig[T]
 
 	// mu guards entries and closed. It is an RWMutex because the common request
 	// — find an already-open handle and claim it — changes nothing shared: the
@@ -56,7 +56,7 @@ type Registry[T io.Closer] struct {
 	// entry alone, or the claimer arrives after the entry is out of the map and
 	// opens it afresh.
 	mu      sync.RWMutex
-	entries map[Tenant]*entry[T]
+	entries map[Namespace]*entry[T]
 	closed  bool
 
 	// held is len(entries), published so release can ask "are we over the
@@ -73,28 +73,19 @@ type Registry[T io.Closer] struct {
 	swept atomic.Int64
 }
 
-// Tenant identifies one database. Type separates keyspaces that may share an
+// Namespace identifies one database. Type separates keyspaces that may share an
 // id — a user and an org called "acme" are different tenants.
-type Tenant struct {
-	Type string
-	ID   string
-}
+// Namespace names one database, e.g. "org/acme" or "user/123/notes". It is
+// opaque here: a path component and an eviction key, nothing more. What
+// qualifies a namespace is hanzoai/iam's business, and this package never
+// branches on what one means. One tenant owns many namespaces; a namespace is
+// what maps to a single file.
+type Namespace string
 
-func (t Tenant) String() string { return t.Type + "/" + t.ID }
+func (n Namespace) String() string { return string(n) }
 
-// valid reports whether a tenant names a database. Type and ID become path
-// segments in two places — a file under Dir locally, a key prefix remotely — so
-// a separator or a dot-segment in either lets one tenant address another
-// tenant's file, or something outside the tree entirely. A tenant id is a name,
-// not a path.
-func (t Tenant) valid() bool { return validSegment(t.Type) && validSegment(t.ID) }
-
-func validSegment(s string) bool {
-	return s != "" && s != "." && s != ".." && !strings.ContainsAny(s, `/\`)
-}
-
-// RegistryConfig configures how tenant databases are located, opened and bounded.
-type RegistryConfig[T io.Closer] struct {
+// NamespacesConfig configures how tenant databases are located, opened and bounded.
+type NamespacesConfig[T io.Closer] struct {
 	// Dir is the local cache directory holding tenant files. It is a CACHE:
 	// anything here must be reconstructible from remote storage, because
 	// eviction deletes handles and a node may be replaced at any time.
@@ -103,7 +94,7 @@ type RegistryConfig[T io.Closer] struct {
 	// MaxOpen bounds how many databases stay open at once. Reaching it evicts
 	// the least recently used handle that nobody is currently using.
 	//
-	// Zero means unbounded, which is the shape that leaks; NewRegistry rejects
+	// Zero means unbounded, which is the shape that leaks; NewNamespaces rejects
 	// it rather than letting it be the accidental default.
 	MaxOpen int
 
@@ -119,9 +110,9 @@ type RegistryConfig[T io.Closer] struct {
 
 	// Open opens the database for a tenant at path. Required — there is no
 	// default, because a default could only ever be right for one T, and a
-	// silently-wrong handle type is worse than a missing one. OpenSQLiteTenant
-	// is the ready-made opener for Registry[DB].
-	Open func(t Tenant, path string) (T, error)
+	// silently-wrong handle type is worse than a missing one. OpenNamespace
+	// is the ready-made opener for Namespaces[DB].
+	Open func(t Namespace, path string) (T, error)
 
 	// Materialize is called when path does not exist locally, to restore it
 	// from remote storage before Open. Returning nil without creating the file
@@ -129,16 +120,16 @@ type RegistryConfig[T io.Closer] struct {
 	//
 	// Nil skips the step entirely — local-only, which is correct for tests and
 	// single-node development but is NOT the production shape.
-	Materialize func(ctx context.Context, t Tenant, path string) error
+	Materialize func(ctx context.Context, t Namespace, path string) error
 
 	// OnOpen runs after a database is opened, for per-tenant setup that must
 	// track the handle's lifetime — starting WAL replication for this file is
 	// the reason it exists. Its error fails the open.
-	OnOpen func(t Tenant, path string, db T) error
+	OnOpen func(t Namespace, path string, db T) error
 
 	// OnClose runs before a database is closed, to undo OnOpen. Its error is
 	// returned by Close but does not prevent the handle being released.
-	OnClose func(t Tenant, path string, db T) error
+	OnClose func(t Namespace, path string, db T) error
 
 	// OnEvictError reports a handle that failed to shut down during eviction.
 	//
@@ -153,15 +144,16 @@ type RegistryConfig[T io.Closer] struct {
 	// Nil means those failures stay silent. That is a deliberate choice a caller
 	// has to make, not a default they back into: set it to log, alert, or refuse
 	// to evict further.
-	OnEvictError func(t Tenant, path string, err error)
+	OnEvictError func(t Namespace, path string, err error)
 
-	// PathFor maps a tenant to its file path under Dir. Defaults to
+	// PathFor maps a namespace to its file path under Dir. It returns an error
+	// when the result would escape Dir. Defaults to
 	// <Dir>/<type>/<id>.db.
-	PathFor func(dir string, t Tenant) string
+	PathFor func(dir string, n Namespace) (string, error)
 }
 
 type entry[T io.Closer] struct {
-	tenant Tenant
+	tenant Namespace
 	path   string
 	db     T
 
@@ -190,9 +182,9 @@ type entry[T io.Closer] struct {
 // ErrRegistryClosed is returned once the registry is closed.
 var ErrRegistryClosed = errors.New("db: registry closed")
 
-// NewRegistry builds a Registry. Dir, a positive MaxOpen and Open are required
+// NewNamespaces builds a Namespaces. Dir, a positive MaxOpen and Open are required
 // — an unbounded registry is the leak this type exists to prevent.
-func NewRegistry[T io.Closer](cfg RegistryConfig[T]) (*Registry[T], error) {
+func NewNamespaces[T io.Closer](cfg NamespacesConfig[T]) (*Namespaces[T], error) {
 	if cfg.Dir == "" {
 		return nil, errors.New("db: registry needs Dir")
 	}
@@ -200,14 +192,14 @@ func NewRegistry[T io.Closer](cfg RegistryConfig[T]) (*Registry[T], error) {
 		return nil, errors.New("db: registry needs MaxOpen > 0 (unbounded is the leak this prevents)")
 	}
 	if cfg.Open == nil {
-		return nil, errors.New("db: registry needs Open (OpenSQLiteTenant for Registry[DB])")
+		return nil, errors.New("db: namespaces needs Open (OpenNamespace for Namespaces[DB])")
 	}
 	if cfg.PathFor == nil {
-		cfg.PathFor = defaultPathFor
+		cfg.PathFor = pathFor
 	}
-	return &Registry[T]{
+	return &Namespaces[T]{
 		cfg:     cfg,
-		entries: make(map[Tenant]*entry[T]),
+		entries: make(map[Namespace]*entry[T]),
 		epoch:   time.Now(),
 	}, nil
 }
@@ -215,19 +207,28 @@ func NewRegistry[T io.Closer](cfg RegistryConfig[T]) (*Registry[T], error) {
 // now is nanoseconds since the registry was built. Monotonic — time.Since
 // reads the monotonic clock — so a wall-clock jump cannot make a handle look
 // idle for an hour, or freshly used when it is not.
-func (r *Registry[T]) now() int64 { return int64(time.Since(r.epoch)) }
+func (r *Namespaces[T]) now() int64 { return int64(time.Since(r.epoch)) }
 
-func defaultPathFor(dir string, t Tenant) string {
-	return filepath.Join(dir, t.Type, t.ID+".db")
+// pathFor returns n's file under dir. Containment is structural rather than a
+// rule about names: the cleaned join must still sit under dir, so no namespace
+// can address a file outside the cache however it is spelled. Checking the
+// result covers separators, dot-segments and encodings alike, which a denylist
+// over the input does not.
+func pathFor(dir string, n Namespace) (string, error) {
+	p := filepath.Clean(filepath.Join(dir, filepath.FromSlash(string(n))+".db"))
+	root := filepath.Clean(dir) + string(filepath.Separator)
+	if !strings.HasPrefix(p, root) {
+		return "", fmt.Errorf("db: namespace %q escapes %s", n, dir)
+	}
+	return p, nil
 }
 
-// OpenSQLiteTenant opens a tenant's SQLite store with this package's defaults.
-// It is the RegistryConfig[DB].Open for the common case.
-func OpenSQLiteTenant(t Tenant, path string) (DB, error) {
+// OpenNamespace opens a tenant's SQLite store with this package's defaults.
+// It is the NamespacesConfig[DB].Open for the common case.
+func OpenNamespace(n Namespace, path string) (DB, error) {
 	return NewSQLiteDB(&SQLiteDBConfig{
-		Path:       path,
-		TenantID:   t.ID,
-		TenantType: t.Type,
+		Path:      path,
+		Namespace: string(n),
 	})
 }
 
@@ -238,7 +239,7 @@ func OpenSQLiteTenant(t Tenant, path string) (DB, error) {
 // forever — reintroducing exactly the unbounded growth this type prevents.
 // Within fn the handle cannot be evicted; after fn returns it becomes evictable.
 // Do not retain the handle beyond fn.
-func (r *Registry[T]) Do(ctx context.Context, t Tenant, fn func(T) error) error {
+func (r *Namespaces[T]) With(ctx context.Context, t Namespace, fn func(T) error) error {
 	e, err := r.acquire(ctx, t)
 	if err != nil {
 		return err
@@ -247,9 +248,9 @@ func (r *Registry[T]) Do(ctx context.Context, t Tenant, fn func(T) error) error 
 	return fn(e.db)
 }
 
-func (r *Registry[T]) acquire(ctx context.Context, t Tenant) (*entry[T], error) {
-	if !t.valid() {
-		return nil, fmt.Errorf("db: invalid tenant %q", t)
+func (r *Namespaces[T]) acquire(ctx context.Context, t Namespace) (*entry[T], error) {
+	if t == "" {
+		return nil, errors.New("db: empty namespace")
 	}
 	e, fresh, err := r.claim(t)
 	if err != nil {
@@ -271,7 +272,7 @@ func (r *Registry[T]) acquire(ctx context.Context, t Tenant) (*entry[T], error) 
 
 // claim finds or creates the entry for t and takes a reference on it. fresh
 // reports that this caller created it and therefore owes it a fill.
-func (r *Registry[T]) claim(t Tenant) (*entry[T], bool, error) {
+func (r *Namespaces[T]) claim(t Namespace) (*entry[T], bool, error) {
 	// The common case, and the only one that has to be cheap: the handle is
 	// open, so claiming it is a map read and an increment under a shared lock.
 	r.mu.RLock()
@@ -297,7 +298,11 @@ func (r *Registry[T]) claim(t Tenant) (*entry[T], bool, error) {
 		e.refs.Add(1)
 		return e, false, nil
 	}
-	e = &entry[T]{tenant: t, path: r.cfg.PathFor(r.cfg.Dir, t), ready: make(chan struct{})}
+	path, err := r.cfg.PathFor(r.cfg.Dir, t)
+	if err != nil {
+		return nil, false, err
+	}
+	e = &entry[T]{tenant: t, path: path, ready: make(chan struct{})}
 	e.refs.Store(1)
 	r.attach(e)
 	return e, true, nil
@@ -305,7 +310,7 @@ func (r *Registry[T]) claim(t Tenant) (*entry[T], bool, error) {
 
 // fill opens the handle behind a fresh entry and publishes the outcome to
 // whoever is waiting on it.
-func (r *Registry[T]) fill(ctx context.Context, e *entry[T]) {
+func (r *Namespaces[T]) fill(ctx context.Context, e *entry[T]) {
 	e.err = r.open(ctx, e)
 	close(e.ready)
 	if e.err == nil {
@@ -320,7 +325,7 @@ func (r *Registry[T]) fill(ctx context.Context, e *entry[T]) {
 	r.mu.Unlock()
 }
 
-func (r *Registry[T]) open(ctx context.Context, e *entry[T]) error {
+func (r *Namespaces[T]) open(ctx context.Context, e *entry[T]) error {
 	if err := os.MkdirAll(filepath.Dir(e.path), 0o700); err != nil {
 		return fmt.Errorf("db: tenant dir for %s: %w", e.tenant, err)
 	}
@@ -345,7 +350,7 @@ func (r *Registry[T]) open(ctx context.Context, e *entry[T]) error {
 	return nil
 }
 
-func (r *Registry[T]) release(e *entry[T]) {
+func (r *Namespaces[T]) release(e *entry[T]) {
 	now := r.now()
 	// Recency before the reference drops: an evictor that sees refs hit zero
 	// must already be able to see the timestamp that goes with it, or it would
@@ -361,9 +366,9 @@ func (r *Registry[T]) release(e *entry[T]) {
 	}
 }
 
-// sweepDue paces the idle sweep — see RegistryConfig.IdleTTL for why it is
+// sweepDue paces the idle sweep — see NamespacesConfig.IdleTTL for why it is
 // paced at all.
-func (r *Registry[T]) sweepDue(now int64) bool {
+func (r *Namespaces[T]) sweepDue(now int64) bool {
 	if r.cfg.IdleTTL <= 0 {
 		return false
 	}
@@ -374,7 +379,7 @@ func (r *Registry[T]) sweepDue(now int64) bool {
 // touches an entry with in-flight users, so a slow request is never yanked out
 // from under its caller — the bound is a target, not a guarantee, and being
 // briefly over it is preferable to closing a database mid-query.
-func (r *Registry[T]) evict() {
+func (r *Namespaces[T]) evict() {
 	var doomed []*entry[T]
 
 	r.mu.Lock()
@@ -428,7 +433,7 @@ const evictSamples = 16
 // victim is sampled. And a sample of nothing but busy handles reads as "nothing
 // to evict": the registry stays over the bound and tries again on the next
 // release, with a fresh sample, because Go randomises where a map range starts.
-func (r *Registry[T]) coldestIdle() *entry[T] {
+func (r *Namespaces[T]) coldestIdle() *entry[T] {
 	var cold *entry[T]
 	var coldest int64
 	// Scan everything when a miss is expensive, sample when it is cheap.
@@ -465,17 +470,17 @@ func (r *Registry[T]) coldestIdle() *entry[T] {
 
 // attach and detach are the only writers of entries, and they republish the
 // open count from it so the two cannot drift. Caller holds mu for writing.
-func (r *Registry[T]) attach(e *entry[T]) {
+func (r *Namespaces[T]) attach(e *entry[T]) {
 	r.entries[e.tenant] = e
 	r.held.Store(int64(len(r.entries)))
 }
 
-func (r *Registry[T]) detach(e *entry[T]) {
+func (r *Namespaces[T]) detach(e *entry[T]) {
 	delete(r.entries, e.tenant)
 	r.held.Store(int64(len(r.entries)))
 }
 
-func (r *Registry[T]) shut(e *entry[T]) error {
+func (r *Namespaces[T]) shut(e *entry[T]) error {
 	<-e.ready
 	if !e.opened {
 		return nil
@@ -491,11 +496,11 @@ func (r *Registry[T]) shut(e *entry[T]) error {
 }
 
 // Open reports how many tenant databases are currently held open.
-func (r *Registry[T]) Open() int { return int(r.held.Load()) }
+func (r *Namespaces[T]) Open() int { return int(r.held.Load()) }
 
 // Close shuts every open database. Further calls to Do fail with
 // ErrRegistryClosed.
-func (r *Registry[T]) Close() error {
+func (r *Namespaces[T]) Close() error {
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
@@ -506,7 +511,7 @@ func (r *Registry[T]) Close() error {
 	for _, e := range r.entries {
 		all = append(all, e)
 	}
-	r.entries = make(map[Tenant]*entry[T])
+	r.entries = make(map[Namespace]*entry[T])
 	r.held.Store(0)
 	r.mu.Unlock()
 
