@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -26,18 +27,26 @@ import (
 // descriptors and memory grew with the number of tenants ever touched, and
 // nothing replicated. Open-per-tenant without a bound leaks by construction.
 //
+// T is the handle type. The registry calls exactly one method on it — Close —
+// because releasing a handle is the whole of its job; what a handle *is* stays
+// the caller's business. That separation is load-bearing: pinning T to this
+// package's DB would force every owner of per-tenant files to adopt this
+// package's entity API as well, which is exactly the toll that made commerce
+// write its own lifecycle instead of reusing this one. Use Registry[DB] here,
+// Registry[yourDB] there, one implementation either way.
+//
 // Layering, one job each:
 //
 //	transport  carries WHICH tenant (request context)
-//	Registry   resolves tenant -> DB: open, cache, evict   <- here
+//	Registry   resolves tenant -> handle: open, cache, evict   <- here
 //	Replicate  makes each tenant file durable (WAL -> S3)
-//	caller     asks for a tenant's DB and thinks about none of it
-type Registry struct {
-	cfg RegistryConfig
+//	caller     asks for a tenant's database and thinks about none of it
+type Registry[T io.Closer] struct {
+	cfg RegistryConfig[T]
 
 	mu      sync.Mutex
-	entries map[Tenant]*entry
-	lru     *list.List // *entry, front = most recently used
+	entries map[Tenant]*entry[T]
+	lru     *list.List // *entry[T], front = most recently used
 	closed  bool
 }
 
@@ -53,7 +62,7 @@ func (t Tenant) String() string { return t.Type + "/" + t.ID }
 func (t Tenant) valid() bool { return t.Type != "" && t.ID != "" }
 
 // RegistryConfig configures how tenant databases are located, opened and bounded.
-type RegistryConfig struct {
+type RegistryConfig[T io.Closer] struct {
 	// Dir is the local cache directory holding tenant files. It is a CACHE:
 	// anything here must be reconstructible from remote storage, because
 	// eviction deletes handles and a node may be replaced at any time.
@@ -70,8 +79,11 @@ type RegistryConfig struct {
 	// a node that goes quiet gives its file descriptors back. Zero disables it.
 	IdleTTL time.Duration
 
-	// Open opens the database for a tenant at path. Defaults to SQLite.
-	Open func(t Tenant, path string) (DB, error)
+	// Open opens the database for a tenant at path. Required — there is no
+	// default, because a default could only ever be right for one T, and a
+	// silently-wrong handle type is worse than a missing one. OpenSQLiteTenant
+	// is the ready-made opener for Registry[DB].
+	Open func(t Tenant, path string) (T, error)
 
 	// Materialize is called when path does not exist locally, to restore it
 	// from remote storage before Open. Returning nil without creating the file
@@ -84,21 +96,21 @@ type RegistryConfig struct {
 	// OnOpen runs after a database is opened, for per-tenant setup that must
 	// track the handle's lifetime — starting WAL replication for this file is
 	// the reason it exists. Its error fails the open.
-	OnOpen func(t Tenant, path string, db DB) error
+	OnOpen func(t Tenant, path string, db T) error
 
 	// OnClose runs before a database is closed, to undo OnOpen. Its error is
 	// returned by Close but does not prevent the handle being released.
-	OnClose func(t Tenant, path string, db DB) error
+	OnClose func(t Tenant, path string, db T) error
 
 	// PathFor maps a tenant to its file path under Dir. Defaults to
 	// <Dir>/<type>/<id>.db.
 	PathFor func(dir string, t Tenant) string
 }
 
-type entry struct {
+type entry[T io.Closer] struct {
 	tenant Tenant
 	path   string
-	db     DB
+	db     T
 
 	refs     int // in-flight users; never evict above zero
 	lastUsed time.Time
@@ -107,15 +119,19 @@ type entry struct {
 	// ready is closed once open finishes. Waiters on a tenant being opened
 	// block here rather than opening it a second time.
 	ready chan struct{}
-	err   error
+	// opened records that db holds a live handle. A bool rather than a nil
+	// check because T is not comparable to nil in general — and Close can
+	// reach an entry whose open failed or is still in flight.
+	opened bool
+	err    error
 }
 
 // ErrRegistryClosed is returned once the registry is closed.
 var ErrRegistryClosed = errors.New("db: registry closed")
 
-// NewRegistry builds a Registry. Dir and a positive MaxOpen are required —
-// an unbounded registry is the leak this type exists to prevent.
-func NewRegistry(cfg RegistryConfig) (*Registry, error) {
+// NewRegistry builds a Registry. Dir, a positive MaxOpen and Open are required
+// — an unbounded registry is the leak this type exists to prevent.
+func NewRegistry[T io.Closer](cfg RegistryConfig[T]) (*Registry[T], error) {
 	if cfg.Dir == "" {
 		return nil, errors.New("db: registry needs Dir")
 	}
@@ -123,14 +139,14 @@ func NewRegistry(cfg RegistryConfig) (*Registry, error) {
 		return nil, errors.New("db: registry needs MaxOpen > 0 (unbounded is the leak this prevents)")
 	}
 	if cfg.Open == nil {
-		cfg.Open = openSQLiteTenant
+		return nil, errors.New("db: registry needs Open (OpenSQLiteTenant for Registry[DB])")
 	}
 	if cfg.PathFor == nil {
 		cfg.PathFor = defaultPathFor
 	}
-	return &Registry{
+	return &Registry[T]{
 		cfg:     cfg,
-		entries: make(map[Tenant]*entry),
+		entries: make(map[Tenant]*entry[T]),
 		lru:     list.New(),
 	}, nil
 }
@@ -139,7 +155,9 @@ func defaultPathFor(dir string, t Tenant) string {
 	return filepath.Join(dir, t.Type, t.ID+".db")
 }
 
-func openSQLiteTenant(t Tenant, path string) (DB, error) {
+// OpenSQLiteTenant opens a tenant's SQLite store with this package's defaults.
+// It is the RegistryConfig[DB].Open for the common case.
+func OpenSQLiteTenant(t Tenant, path string) (DB, error) {
 	return NewSQLiteDB(&SQLiteDBConfig{
 		Path:       path,
 		TenantID:   t.ID,
@@ -153,8 +171,8 @@ func openSQLiteTenant(t Tenant, path string) (DB, error) {
 // them the job of returning it, and a forgotten return pins a database open
 // forever — reintroducing exactly the unbounded growth this type prevents.
 // Within fn the handle cannot be evicted; after fn returns it becomes evictable.
-// Do not retain the DB beyond fn.
-func (r *Registry) Do(ctx context.Context, t Tenant, fn func(DB) error) error {
+// Do not retain the handle beyond fn.
+func (r *Registry[T]) Do(ctx context.Context, t Tenant, fn func(T) error) error {
 	e, err := r.acquire(ctx, t)
 	if err != nil {
 		return err
@@ -163,7 +181,7 @@ func (r *Registry) Do(ctx context.Context, t Tenant, fn func(DB) error) error {
 	return fn(e.db)
 }
 
-func (r *Registry) acquire(ctx context.Context, t Tenant) (*entry, error) {
+func (r *Registry[T]) acquire(ctx context.Context, t Tenant) (*entry[T], error) {
 	if !t.valid() {
 		return nil, fmt.Errorf("db: invalid tenant %q", t)
 	}
@@ -185,7 +203,7 @@ func (r *Registry) acquire(ctx context.Context, t Tenant) (*entry, error) {
 		return e, nil
 	}
 
-	e := &entry{tenant: t, path: r.cfg.PathFor(r.cfg.Dir, t), refs: 1, lastUsed: time.Now(), ready: make(chan struct{})}
+	e := &entry[T]{tenant: t, path: r.cfg.PathFor(r.cfg.Dir, t), refs: 1, lastUsed: time.Now(), ready: make(chan struct{})}
 	e.el = r.lru.PushFront(e)
 	r.entries[t] = e
 	r.mu.Unlock()
@@ -208,7 +226,7 @@ func (r *Registry) acquire(ctx context.Context, t Tenant) (*entry, error) {
 	return e, nil
 }
 
-func (r *Registry) open(ctx context.Context, e *entry) error {
+func (r *Registry[T]) open(ctx context.Context, e *entry[T]) error {
 	if err := os.MkdirAll(filepath.Dir(e.path), 0o700); err != nil {
 		return fmt.Errorf("db: tenant dir for %s: %w", e.tenant, err)
 	}
@@ -229,10 +247,11 @@ func (r *Registry) open(ctx context.Context, e *entry) error {
 		}
 	}
 	e.db = db
+	e.opened = true
 	return nil
 }
 
-func (r *Registry) release(e *entry) {
+func (r *Registry[T]) release(e *entry[T]) {
 	r.mu.Lock()
 	if e.refs > 0 {
 		e.refs--
@@ -246,15 +265,15 @@ func (r *Registry) release(e *entry) {
 // touches an entry with in-flight users, so a slow request is never yanked out
 // from under its caller — the bound is a target, not a guarantee, and being
 // briefly over it is preferable to closing a database mid-query.
-func (r *Registry) evict() {
-	var doomed []*entry
+func (r *Registry[T]) evict() {
+	var doomed []*entry[T]
 
 	r.mu.Lock()
 	if r.cfg.IdleTTL > 0 {
 		cutoff := time.Now().Add(-r.cfg.IdleTTL)
 		for el := r.lru.Back(); el != nil; {
 			prev := el.Prev()
-			e := el.Value.(*entry)
+			e := el.Value.(*entry[T])
 			if e.refs == 0 && e.lastUsed.Before(cutoff) {
 				r.detach(e)
 				doomed = append(doomed, e)
@@ -279,9 +298,9 @@ func (r *Registry) evict() {
 
 // coldestIdle returns the least recently used entry with no in-flight users.
 // Caller holds mu.
-func (r *Registry) coldestIdle() *entry {
+func (r *Registry[T]) coldestIdle() *entry[T] {
 	for el := r.lru.Back(); el != nil; el = el.Prev() {
-		if e := el.Value.(*entry); e.refs == 0 {
+		if e := el.Value.(*entry[T]); e.refs == 0 {
 			return e
 		}
 	}
@@ -289,14 +308,14 @@ func (r *Registry) coldestIdle() *entry {
 }
 
 // detach removes an entry from the maps. Caller holds mu.
-func (r *Registry) detach(e *entry) {
+func (r *Registry[T]) detach(e *entry[T]) {
 	delete(r.entries, e.tenant)
 	r.lru.Remove(e.el)
 }
 
-func (r *Registry) shut(e *entry) error {
+func (r *Registry[T]) shut(e *entry[T]) error {
 	<-e.ready
-	if e.db == nil {
+	if !e.opened {
 		return nil
 	}
 	var err error
@@ -310,7 +329,7 @@ func (r *Registry) shut(e *entry) error {
 }
 
 // Open reports how many tenant databases are currently held open.
-func (r *Registry) Open() int {
+func (r *Registry[T]) Open() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.lru.Len()
@@ -318,18 +337,18 @@ func (r *Registry) Open() int {
 
 // Close shuts every open database. Further calls to Do fail with
 // ErrRegistryClosed.
-func (r *Registry) Close() error {
+func (r *Registry[T]) Close() error {
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
 		return nil
 	}
 	r.closed = true
-	all := make([]*entry, 0, len(r.entries))
+	all := make([]*entry[T], 0, len(r.entries))
 	for _, e := range r.entries {
 		all = append(all, e)
 	}
-	r.entries = make(map[Tenant]*entry)
+	r.entries = make(map[Tenant]*entry[T])
 	r.lru.Init()
 	r.mu.Unlock()
 

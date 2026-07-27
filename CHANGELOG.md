@@ -5,6 +5,32 @@ All notable changes to `github.com/hanzoai/orm` are documented here.
 The format is loosely [Keep a Changelog](https://keepachangelog.com/) and
 versioning follows [SemVer](https://semver.org/).
 
+## v0.6.9
+
+### Changed
+
+- `db.Registry` is parameterised on its handle type: `Registry[T io.Closer]`,
+  `RegistryConfig[T]`, `Do(ctx, Tenant, func(T) error)`. The registry calls
+  exactly one method on a handle — `Close` — so pinning it to this package's
+  `db.DB` was incidental: it forced every owner of per-tenant files to adopt
+  this package's entity API to get bounded lifecycle, which is why
+  `hanzoai/commerce` grew its own unbounded `userDBs`/`orgDBs` maps instead of
+  reusing this. `Registry[db.DB]` here, `Registry[yourDB]` there, one
+  implementation either way.
+- `RegistryConfig.Open` is now required, and the SQLite opener is exported as
+  `db.OpenSQLiteTenant`. A default `Open` can only be right for one `T`, and a
+  silently-wrong handle type is worse than a missing one.
+
+## v0.6.8
+
+### Added
+
+- `db.Registry` — per-tenant database lifecycle: open on demand, bound by
+  `MaxOpen`, evict the coldest idle handle, `Materialize` a file from object
+  storage on a local miss, `OnOpen`/`OnClose` bracket a handle's life (the seam
+  WAL replication attaches to). `Do(ctx, Tenant, fn)` is the only way in, so a
+  handle cannot leak. `Tenant{Type, ID}` separates keyspaces that share an id.
+
 ## v0.6.7
 
 ### Added

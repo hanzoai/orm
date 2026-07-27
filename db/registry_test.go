@@ -27,7 +27,7 @@ func (f *fakeDB) TenantID() string   { return f.tenant.ID }
 func (f *fakeDB) TenantType() string { return f.tenant.Type }
 func (f *fakeDB) Close() error       { f.closed.Store(true); return nil }
 
-func fakeRegistry(t *testing.T, cfg RegistryConfig) (*Registry, *int64) {
+func fakeRegistry(t *testing.T, cfg RegistryConfig[DB]) (*Registry[DB], *int64) {
 	t.Helper()
 	var opens int64
 	if cfg.Dir == "" {
@@ -54,19 +54,22 @@ func fakeRegistry(t *testing.T, cfg RegistryConfig) (*Registry, *int64) {
 	return r, &opens
 }
 
-func TestRegistryRejectsUnboundedConfig(t *testing.T) {
+func TestRegistryRejectsIncompleteConfig(t *testing.T) {
 	// MaxOpen == 0 is the shape that leaks — open-per-tenant with nothing ever
 	// closed. It must not be reachable by omission.
-	if _, err := NewRegistry(RegistryConfig{Dir: t.TempDir()}); err == nil {
+	if _, err := NewRegistry(RegistryConfig[DB]{Dir: t.TempDir(), Open: OpenSQLiteTenant}); err == nil {
 		t.Fatal("MaxOpen 0 must be rejected, not silently unbounded")
 	}
-	if _, err := NewRegistry(RegistryConfig{MaxOpen: 4}); err == nil {
+	if _, err := NewRegistry(RegistryConfig[DB]{MaxOpen: 4, Open: OpenSQLiteTenant}); err == nil {
 		t.Fatal("missing Dir must be rejected")
+	}
+	if _, err := NewRegistry(RegistryConfig[DB]{Dir: t.TempDir(), MaxOpen: 4}); err == nil {
+		t.Fatal("missing Open must be rejected — there is no default that suits every handle type")
 	}
 }
 
 func TestRegistryReusesOpenHandle(t *testing.T) {
-	r, opens := fakeRegistry(t, RegistryConfig{})
+	r, opens := fakeRegistry(t, RegistryConfig[DB]{})
 	tn := Tenant{Type: "org", ID: "acme"}
 	for i := 0; i < 5; i++ {
 		if err := r.Do(context.Background(), tn, func(DB) error { return nil }); err != nil {
@@ -79,7 +82,7 @@ func TestRegistryReusesOpenHandle(t *testing.T) {
 }
 
 func TestRegistryEvictsColdestPastBound(t *testing.T) {
-	r, opens := fakeRegistry(t, RegistryConfig{MaxOpen: 2})
+	r, opens := fakeRegistry(t, RegistryConfig[DB]{MaxOpen: 2})
 	ctx := context.Background()
 	for _, id := range []string{"a", "b", "c"} {
 		if err := r.Do(ctx, Tenant{Type: "org", ID: id}, func(DB) error { return nil }); err != nil {
@@ -100,7 +103,7 @@ func TestRegistryEvictsColdestPastBound(t *testing.T) {
 func TestRegistryNeverEvictsHandleInUse(t *testing.T) {
 	// The property that makes Do safe: a slow caller must not have its database
 	// closed underneath it just because other tenants arrived.
-	r, _ := fakeRegistry(t, RegistryConfig{MaxOpen: 1})
+	r, _ := fakeRegistry(t, RegistryConfig[DB]{MaxOpen: 1})
 	ctx := context.Background()
 
 	inside := make(chan struct{})
@@ -127,7 +130,7 @@ func TestRegistryNeverEvictsHandleInUse(t *testing.T) {
 }
 
 func TestRegistryIdleTTLClosesQuietHandles(t *testing.T) {
-	r, _ := fakeRegistry(t, RegistryConfig{MaxOpen: 8, IdleTTL: 30 * time.Millisecond})
+	r, _ := fakeRegistry(t, RegistryConfig[DB]{MaxOpen: 8, IdleTTL: 30 * time.Millisecond})
 	ctx := context.Background()
 	_ = r.Do(ctx, Tenant{Type: "org", ID: "quiet"}, func(DB) error { return nil })
 	if r.Open() != 1 {
@@ -144,7 +147,7 @@ func TestRegistryIdleTTLClosesQuietHandles(t *testing.T) {
 func TestRegistryMaterializesOnLocalMiss(t *testing.T) {
 	dir := t.TempDir()
 	var called int64
-	r, _ := fakeRegistry(t, RegistryConfig{
+	r, _ := fakeRegistry(t, RegistryConfig[DB]{
 		Dir:     dir,
 		MaxOpen: 4,
 		Materialize: func(_ context.Context, tn Tenant, path string) error {
@@ -175,7 +178,7 @@ func TestRegistryOnOpenOnCloseBracketHandleLife(t *testing.T) {
 	// This is how per-tenant WAL replication attaches: start on open, stop on
 	// close, once per handle rather than once per registry.
 	var started, stopped int64
-	r, _ := fakeRegistry(t, RegistryConfig{
+	r, _ := fakeRegistry(t, RegistryConfig[DB]{
 		MaxOpen: 1,
 		OnOpen:  func(Tenant, string, DB) error { atomic.AddInt64(&started, 1); return nil },
 		OnClose: func(Tenant, string, DB) error { atomic.AddInt64(&stopped, 1); return nil },
@@ -195,7 +198,7 @@ func TestRegistryOnOpenOnCloseBracketHandleLife(t *testing.T) {
 func TestRegistryOpenFailureIsNotCached(t *testing.T) {
 	// A tenant that failed to open once must be retried, not permanently poisoned.
 	var attempts int64
-	r, _ := fakeRegistry(t, RegistryConfig{
+	r, _ := fakeRegistry(t, RegistryConfig[DB]{
 		MaxOpen: 2,
 		Open: func(tn Tenant, path string) (DB, error) {
 			if atomic.AddInt64(&attempts, 1) == 1 {
@@ -215,7 +218,7 @@ func TestRegistryOpenFailureIsNotCached(t *testing.T) {
 }
 
 func TestRegistryConcurrentGetOpensOnce(t *testing.T) {
-	r, opens := fakeRegistry(t, RegistryConfig{MaxOpen: 4, Open: func(tn Tenant, path string) (DB, error) {
+	r, opens := fakeRegistry(t, RegistryConfig[DB]{MaxOpen: 4, Open: func(tn Tenant, path string) (DB, error) {
 		time.Sleep(20 * time.Millisecond) // widen the race window
 		return &fakeDB{tenant: tn}, nil
 	}})
@@ -233,7 +236,7 @@ func TestRegistryConcurrentGetOpensOnce(t *testing.T) {
 }
 
 func TestRegistryTenantTypeSeparatesKeyspaces(t *testing.T) {
-	r, opens := fakeRegistry(t, RegistryConfig{MaxOpen: 4})
+	r, opens := fakeRegistry(t, RegistryConfig[DB]{MaxOpen: 4})
 	ctx := context.Background()
 	_ = r.Do(ctx, Tenant{Type: "user", ID: "acme"}, func(DB) error { return nil })
 	_ = r.Do(ctx, Tenant{Type: "org", ID: "acme"}, func(DB) error { return nil })
@@ -243,7 +246,7 @@ func TestRegistryTenantTypeSeparatesKeyspaces(t *testing.T) {
 }
 
 func TestRegistryCloseShutsEverything(t *testing.T) {
-	r, _ := fakeRegistry(t, RegistryConfig{MaxOpen: 4})
+	r, _ := fakeRegistry(t, RegistryConfig[DB]{MaxOpen: 4})
 	ctx := context.Background()
 	var held DB
 	_ = r.Do(ctx, Tenant{Type: "org", ID: "a"}, func(d DB) error { held = d; return nil })
