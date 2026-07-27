@@ -161,24 +161,29 @@ func (s *store) stop(t db.Namespace) error {
 	return rdb.Close(context.Background())
 }
 
-// urlFor is <base>/<type>/<id>.
+// urlFor is <base>/<namespace>.
 //
-// The tenant goes into the URL's PATH, not onto the end of the string: the base
-// carries query parameters (endpoint, region), so concatenating would append the
-// tenant after "?endpoint=…" and quietly point every tenant at the bucket root.
+// The namespace goes into the URL's PATH, not onto the end of the string: the
+// base carries query parameters (endpoint, region), so concatenating would
+// append it after "?endpoint=…" and quietly point every namespace at the bucket
+// root.
 func (s *store) urlFor(t db.Namespace) (string, error) {
-	// Type and ID must each be one path segment. The registry rejects anything
-	// else before it calls a hook, but this is the boundary where a tenant name
-	// becomes a key prefix and replicate path.Cleans what it is given, so a ".."
-	// that got this far would resolve into another tenant's history.
-	if !segment(t.Type) || !segment(t.ID) {
-		return "", fmt.Errorf("replicated: tenant %q is a path, not a name", t)
+	// A namespace is a path OF names, and every element must be a name. The
+	// registry canonicalises before it calls a hook, but this is the boundary
+	// where a namespace becomes a key prefix and replicate path.Cleans what it
+	// is given, so a ".." that got this far would resolve into another
+	// namespace's history.
+	segs := strings.Split(string(t), "/")
+	for _, seg := range segs {
+		if !segment(seg) {
+			return "", fmt.Errorf("replicated: namespace %q is a path, not a name", t)
+		}
 	}
 	u, err := url.Parse(s.base)
 	if err != nil {
 		return "", fmt.Errorf("replicated: bad RemoteURL %q: %w", s.base, err)
 	}
-	u.Path = path.Join(u.Path, t.Type, t.ID)
+	u.Path = path.Join(append([]string{u.Path}, segs...)...)
 	u.RawPath = "" // Path is authoritative; drop any escaping carried by base
 	return u.String(), nil
 }

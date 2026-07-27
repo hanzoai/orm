@@ -126,7 +126,7 @@ func TestStreamIsPerTenantFile(t *testing.T) {
 	// Each tenant's history is under its own prefix, so an id shared across
 	// keyspaces cannot land in one place.
 	for _, tn := range []db.Namespace{a, b} {
-		if _, err := os.Stat(filepath.Join(remote, tn.Type, tn.ID, "ltx")); err != nil {
+		if _, err := os.Stat(filepath.Join(remote, filepath.FromSlash(string(tn)), "ltx")); err != nil {
 			t.Fatalf("no replica history for %s: %v", tn, err)
 		}
 	}
@@ -157,7 +157,7 @@ func TestEvictionStopsStreaming(t *testing.T) {
 	}
 
 	// Behind the registry's back, so no new stream starts.
-	writeDirect(t, filepath.Join(dir, a.Type, a.ID+".db"), a, "n2", "after-evict")
+	writeDirect(t, filepath.Join(dir, filepath.FromSlash(string(a))+".db"), a, "n2", "after-evict")
 
 	// Outwait BOTH intervals a live stream would need — replicate's monitor
 	// scanning the WAL into shadow (1s, not configurable by env) and the replica
@@ -237,7 +237,7 @@ func TestMaterializeRestoresOnAnotherNode(t *testing.T) {
 	if got != "survives-the-node" {
 		t.Fatalf("restored note = %q, want %q", got, "survives-the-node")
 	}
-	if _, err := os.Stat(filepath.Join(node2Dir, tn.Type, tn.ID+".db")); err != nil {
+	if _, err := os.Stat(filepath.Join(node2Dir, filepath.FromSlash(string(tn))+".db")); err != nil {
 		t.Fatalf("materialize left no local file: %v", err)
 	}
 }
@@ -265,15 +265,19 @@ func TestUnconfiguredEncryptionRefusesTenant(t *testing.T) {
 	}
 }
 
-// TestTenantMustBeAName: a tenant id becomes a key prefix here, so a path in one
-// would address another tenant's history.
-func TestTenantMustBeAName(t *testing.T) {
+// TestNamespaceMustBeNames: a namespace becomes a key prefix here, so a
+// dot-segment anywhere in one would address another namespace's history. Every
+// element has to be a name, not just the last.
+func TestNamespaceMustBeNames(t *testing.T) {
 	s := &store{base: "file:///tmp/whatever"}
 	for _, tn := range []db.Namespace{
-		{Type: "org", ID: ".."},
-		{Type: "org", ID: "../other"},
-		{Type: "..", ID: "acme"},
-		{Type: "org", ID: ""},
+		"org/..",
+		"org/../other",
+		"../acme",
+		"org/",
+		"org//acme",
+		"",
+		"org/acme/../../etc",
 	} {
 		if u, err := s.urlFor(tn); err == nil {
 			t.Errorf("urlFor(%q) = %q, want an error", tn, u)
@@ -309,7 +313,7 @@ func TestRemoteURLKeepsQueryParameters(t *testing.T) {
 // with one row in it, and closes it.
 func tenantFile(t *testing.T, dir string, tn db.Namespace, text string) string {
 	t.Helper()
-	p := filepath.Join(dir, tn.Type, tn.ID+".db")
+	p := filepath.Join(dir, filepath.FromSlash(string(tn))+".db")
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		t.Fatal(err)
 	}
