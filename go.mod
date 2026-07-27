@@ -3,7 +3,7 @@ module github.com/hanzoai/orm
 go 1.26.4
 
 require (
-	github.com/hanzoai/dbx v1.16.0
+	github.com/hanzoai/dbx v1.17.2
 	github.com/hanzoai/xorm v1.4.4
 	github.com/hanzokv/go/v9 v9.22.0
 	github.com/valyala/fasthttp v1.72.0
