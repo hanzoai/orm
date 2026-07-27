@@ -5,6 +5,33 @@ All notable changes to `github.com/hanzoai/orm` are documented here.
 The format is loosely [Keep a Changelog](https://keepachangelog.com/) and
 versioning follows [SemVer](https://semver.org/).
 
+## v0.6.16
+
+### Changed
+
+- `github.com/zap-proto/http` v0.2.2 → **v0.3.0**. **Wire break, not an API
+  break**: v0.3.0 replaces the JSON header map inside the ZAP frame with
+  length-prefixed name/value pairs — `[u32 count]`, then `[u32 nameLen][name]
+  [u32 valueLen][value]` — making header decode 0 allocs/op. The exported
+  `zaphttp` surface is unchanged, so `db/zap.go` needed no edit; the ZAP driver
+  is byte-compatible with the new frame because the transport owns the codec.
+  - **A v0.2.x peer cannot talk to a v0.3.0 peer.** Both ends of a ZAP-HTTP
+    connection must cross together. This module ships the client half; the
+    hanzo ZAP backends expose no listener yet (see `LLM.md`), so nothing is
+    live on the old wire today. Consumers still pinned to orm ≤ v0.6.15 must
+    move with their peers, not ahead of them.
+  - Verified end to end, not by version arithmetic: `zap_adapter_test.go`
+    round-trips create → get → update → delete against a real in-process
+    `zaphttp.Server` KV backend over a loopback socket, green under `-race`.
+- `github.com/zap-proto/go` v1.1.0 → v1.3.0 (indirect, the frame runtime).
+  v0.3.0 requires only v1.1.0; carrying v1.3.0 keeps orm from forcing a peer
+  that also imports `zap-proto/zip` v1.10.0 *down* under MVS.
+
+`zap-proto/zip` is deliberately **not** a dependency: orm imports none of it, so
+`go mod tidy` drops it and its ~15-package tree (goja, esbuild, fiber) rather
+than charging every ORM consumer for an HTTP framework. See "Why orm and not
+zip" in `LLM.md`.
+
 ## v0.6.10
 
 ### Added
