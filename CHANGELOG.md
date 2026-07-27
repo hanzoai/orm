@@ -32,6 +32,18 @@ versioning follows [SemVer](https://semver.org/).
 than charging every ORM consumer for an HTTP framework. See "Why orm and not
 zip" in `LLM.md`.
 
+## replicated/v0.1.2
+
+### Changed
+
+- Pin `github.com/hanzoai/orm` v0.6.15 → **v0.6.16**, carrying `zap-proto/http`
+  v0.2.2 → v0.3.0 (indirect). No code change — `replicated` never touches the
+  ZAP driver — but the pin is load-bearing: a service that imports only
+  `orm/replicated` resolves orm through this go.mod, so leaving it on v0.6.15
+  would hold that service's `zap-proto/http` at v0.2.2 under MVS and strand it
+  on the old frame. A submodule's pin is a wire decision for anyone downstream
+  of it, not bookkeeping.
+
 ## v0.6.10
 
 ### Added
