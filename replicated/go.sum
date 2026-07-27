@@ -111,6 +111,8 @@ github.com/hanzoai/lz4/v4 v4.1.22 h1:NjK1Umwaxb5lnoFB44iGPtGj58y/PLucNcCc2gE8q4I
 github.com/hanzoai/lz4/v4 v4.1.22/go.mod h1:/iX6TGHL94Q9MkMmvHKKHlyopHn06RjEW7Bz3h6TJEk=
 github.com/hanzoai/orm v0.6.9 h1:SKwdmkSyPtvJej2IJbhrR3a08a3OHOFdGsz0iV3v1tc=
 github.com/hanzoai/orm v0.6.9/go.mod h1:jmszOBtvtaydmS6k3CuGAKgjAa7wjeIfeVQF3R3Ipy4=
+github.com/hanzoai/orm v0.6.14 h1:7r+p/Bb4I/py0qGSdkWZ01AtlOW9u+Jh2Fiu0P6XNS8=
+github.com/hanzoai/orm v0.6.14/go.mod h1:NKK3w1Es0emqA2aE2GH/uL2yvVLD0Uf1iSwmJm6nFxI=
 github.com/hanzoai/replicate v0.9.6 h1:6y3u3NFBFEoHoEUNJ/yAZXL5oo8pwaA6+/egnSVxMaw=
 github.com/hanzoai/replicate v0.9.6/go.mod h1:djuB3n7Bk/CPNd1msZGFu7mgFJ6U5MrH9h5+7Wvf7fg=
 github.com/hanzoai/sqlcipher v0.1.0 h1:V9gKG3ZltN2ZCteDrOnXWfOeEe/YDhhUm9AorQEAuBo=
