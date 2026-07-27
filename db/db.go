@@ -53,17 +53,16 @@ const (
 	LayerAll                    // Query all layers
 )
 
-// Config holds database configuration options.
+// Config holds database configuration options. The analytics plane is
+// configured on its own, by orm/datastore.Config — it addresses a different
+// store over a different protocol, so it does not share this one.
 type Config struct {
 	DataDir            string
 	UserDataDir        string
 	OrgDataDir         string
-	DatastoreDSN       string
-	EnableDatastore    bool
 	EnableVectorSearch bool
 	VectorDimensions   int
 	SQLite             SQLiteConfig
-	Datastore          DatastoreConfig
 	IsDev              bool
 }
 
@@ -78,20 +77,10 @@ type SQLiteConfig struct {
 	QueryTimeout time.Duration
 }
 
-// DatastoreConfig holds Hanzo Datastore configuration.
-type DatastoreConfig struct {
-	MaxOpenConns    int
-	MaxIdleConns    int
-	ConnMaxLifetime time.Duration
-	Compression     string
-	QueryTimeout    time.Duration
-}
-
 // DefaultConfig returns a default configuration.
 func DefaultConfig() *Config {
 	return &Config{
 		DataDir:            "./data",
-		EnableDatastore:    false,
 		EnableVectorSearch: true,
 		VectorDimensions:   1536,
 		SQLite: SQLiteConfig{
@@ -102,13 +91,6 @@ func DefaultConfig() *Config {
 			Synchronous:  "NORMAL",
 			CacheSize:    -16000,
 			QueryTimeout: 30 * time.Second,
-		},
-		Datastore: DatastoreConfig{
-			MaxOpenConns:    25,
-			MaxIdleConns:    5,
-			ConnMaxLifetime: time.Hour,
-			Compression:     "lz4",
-			QueryTimeout:    60 * time.Second,
 		},
 		IsDev: false,
 	}
@@ -177,34 +159,20 @@ type DB interface {
 	TenantType() string
 }
 
-// AnalyticsStore is the interface for analytics queries (e.g. Hanzo Datastore).
-type AnalyticsStore interface {
-	Query(ctx context.Context, query string, args ...interface{}) (AnalyticsRows, error)
-	Select(ctx context.Context, dest interface{}, query string, args ...interface{}) error
-	Exec(ctx context.Context, query string, args ...interface{}) error
-	PrepareBatch(ctx context.Context, query string) (AnalyticsBatch, error)
-	AsyncInsert(ctx context.Context, query string, wait bool, args ...interface{}) error
-	Close() error
-}
-
-// AnalyticsRows represents analytics query results.
-type AnalyticsRows interface {
-	Next() bool
-	Scan(dest ...interface{}) error
-	ScanStruct(dest interface{}) error
-	Columns() []string
-	Close() error
-	Err() error
-}
-
-// AnalyticsBatch for bulk inserts into analytics store.
-type AnalyticsBatch interface {
-	Append(v ...interface{}) error
-	AppendStruct(v interface{}) error
-	Flush() error
-	Send() error
-	Abort() error
-	Rows() int
+// Datastore is the analytics plane: one shared columnar warehouse holding
+// measurements, where a tenant is a column rather than a database. It is the
+// counterpart of DB, which holds entities and where a tenant is the whole
+// database. Analytics SQL is written by hand, so this carries statements and
+// rows and maps no records.
+//
+// Ready reports whether the warehouse is reachable; Exec and Query return an
+// error rather than fabricating a result when it is not. Implemented by
+// orm/datastore.Conn — declared here so the relational plane can name the
+// analytics plane without importing its driver.
+type Datastore interface {
+	Ready() bool
+	Exec(ctx context.Context, stmt string, args ...any) error
+	Query(ctx context.Context, query string, args ...any) ([]map[string]any, error)
 	Close() error
 }
 
