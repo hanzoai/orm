@@ -15,16 +15,16 @@ import (
 // file, and the registry still decides when that file is open. There is no
 // second connection to a tenant and no raw escape hatch bolted onto DB — the
 // interface stays implementable by backends that are not SQL.
-func rawRegistry(t *testing.T, maxOpen int) (*Registry[DB], func(Tenant) *sql.DB) {
+func rawRegistry(t *testing.T, maxOpen int) (*Namespaces[DB], func(Namespace) *sql.DB) {
 	t.Helper()
 
 	var mu sync.Mutex
-	conns := map[Tenant]*sql.DB{}
+	conns := map[Namespace]*sql.DB{}
 
-	r, err := NewRegistry(RegistryConfig[DB]{
+	r, err := NewNamespaces(NamespacesConfig[DB]{
 		Dir:     t.TempDir(),
 		MaxOpen: maxOpen,
-		Open: func(tn Tenant, path string) (DB, error) {
+		Open: func(tn Namespace, path string) (DB, error) {
 			// PragmaDSN applies WAL and busy_timeout, the same open contract
 			// NewSQLiteDB uses. A caller-opened tenant file needs it for the
 			// same reason: without it a writer meets SQLITE_BUSY immediately.
@@ -38,7 +38,7 @@ func rawRegistry(t *testing.T, maxOpen int) (*Registry[DB], func(Tenant) *sql.DB
 			mu.Unlock()
 			return AdaptSQLDB(conn)
 		},
-		OnClose: func(tn Tenant, _ string, _ DB) error {
+		OnClose: func(tn Namespace, _ string, _ DB) error {
 			// AdaptSQLDB borrows, so closing the connection is the caller's job
 			// and eviction is where it happens.
 			mu.Lock()
@@ -52,12 +52,12 @@ func rawRegistry(t *testing.T, maxOpen int) (*Registry[DB], func(Tenant) *sql.DB
 		},
 	})
 	if err != nil {
-		t.Fatalf("NewRegistry: %v", err)
+		t.Fatalf("NewNamespaces: %v", err)
 	}
 	t.Cleanup(func() { _ = r.Close() })
 
 	// Only valid inside a Do scope: outside one the handle may be evicted.
-	return r, func(tn Tenant) *sql.DB {
+	return r, func(tn Namespace) *sql.DB {
 		mu.Lock()
 		defer mu.Unlock()
 		return conns[tn]
@@ -97,14 +97,14 @@ func readLedger(ctx context.Context, conn *sql.DB) ([]string, error) {
 func TestRegistryRawSQLCannotCrossTenants(t *testing.T) {
 	r, raw := rawRegistry(t, 4)
 	ctx := context.Background()
-	alpha := Tenant{Type: "org", ID: "alpha"}
-	beta := Tenant{Type: "org", ID: "beta"}
+	alpha := Namespace("org/alpha")
+	beta := Namespace("org/beta")
 
 	for _, seed := range []struct {
-		tenant Tenant
+		tenant Namespace
 		secret string
 	}{{alpha, "alpha-only"}, {beta, "beta-only"}} {
-		if err := r.Do(ctx, seed.tenant, func(DB) error {
+		if err := r.With(ctx, seed.tenant, func(DB) error {
 			return seedLedger(ctx, raw(seed.tenant), seed.secret)
 		}); err != nil {
 			t.Fatalf("seed %s: %v", seed.tenant, err)
@@ -112,11 +112,11 @@ func TestRegistryRawSQLCannotCrossTenants(t *testing.T) {
 	}
 
 	for _, want := range []struct {
-		tenant Tenant
+		tenant Namespace
 		mine   string
 		theirs string
 	}{{alpha, "alpha-only", "beta-only"}, {beta, "beta-only", "alpha-only"}} {
-		if err := r.Do(ctx, want.tenant, func(DB) error {
+		if err := r.With(ctx, want.tenant, func(DB) error {
 			got, err := readLedger(ctx, raw(want.tenant))
 			if err != nil {
 				return err
@@ -135,10 +135,18 @@ func TestRegistryRawSQLCannotCrossTenants(t *testing.T) {
 		}
 	}
 
-	// Two tenants are two files. This is why the isolation above needs no
+	// Two namespaces are two files. This is why the isolation above needs no
 	// predicate.
-	if a, b := r.cfg.PathFor(r.cfg.Dir, alpha), r.cfg.PathFor(r.cfg.Dir, beta); a == b {
-		t.Fatalf("both tenants resolved to %s", a)
+	a, err := r.cfg.PathFor(r.cfg.Dir, alpha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := r.cfg.PathFor(r.cfg.Dir, beta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a == b {
+		t.Fatalf("both namespaces resolved to %s", a)
 	}
 }
 
@@ -153,17 +161,17 @@ type rawNote struct {
 func TestRegistryTypedWriteIsVisibleToRawRead(t *testing.T) {
 	r, raw := rawRegistry(t, 4)
 	ctx := context.Background()
-	alpha := Tenant{Type: "org", ID: "alpha"}
-	beta := Tenant{Type: "org", ID: "beta"}
+	alpha := Namespace("org/alpha")
+	beta := Namespace("org/beta")
 
-	if err := r.Do(ctx, alpha, func(d DB) error {
+	if err := r.With(ctx, alpha, func(d DB) error {
 		_, err := d.Put(ctx, d.NewKey("note", "n1", 0, nil), &rawNote{Body: "written-through-the-typed-layer"})
 		return err
 	}); err != nil {
 		t.Fatalf("typed write: %v", err)
 	}
 
-	if err := r.Do(ctx, alpha, func(DB) error {
+	if err := r.With(ctx, alpha, func(DB) error {
 		var body string
 		err := raw(alpha).QueryRowContext(ctx,
 			`SELECT json_extract(data, '$.body') FROM _entities WHERE kind = ? AND id = ?`,
@@ -179,7 +187,7 @@ func TestRegistryTypedWriteIsVisibleToRawRead(t *testing.T) {
 		t.Fatalf("raw read of typed write: %v", err)
 	}
 
-	if err := r.Do(ctx, beta, func(DB) error {
+	if err := r.With(ctx, beta, func(DB) error {
 		var n int
 		if err := raw(beta).QueryRowContext(ctx, `SELECT count(*) FROM _entities`).Scan(&n); err != nil {
 			return err
@@ -199,17 +207,17 @@ func TestRegistryTypedWriteIsVisibleToRawRead(t *testing.T) {
 func TestRegistryRawSQLSurvivesEviction(t *testing.T) {
 	r, raw := rawRegistry(t, 1) // one open handle, so the next tenant evicts the last
 	ctx := context.Background()
-	alpha := Tenant{Type: "org", ID: "alpha"}
-	beta := Tenant{Type: "org", ID: "beta"}
+	alpha := Namespace("org/alpha")
+	beta := Namespace("org/beta")
 
-	if err := r.Do(ctx, alpha, func(DB) error {
+	if err := r.With(ctx, alpha, func(DB) error {
 		return seedLedger(ctx, raw(alpha), "alpha-only")
 	}); err != nil {
 		t.Fatalf("seed alpha: %v", err)
 	}
 	evicted := raw(alpha)
 
-	if err := r.Do(ctx, beta, func(DB) error {
+	if err := r.With(ctx, beta, func(DB) error {
 		return seedLedger(ctx, raw(beta), "beta-only")
 	}); err != nil {
 		t.Fatalf("seed beta: %v", err)
@@ -227,7 +235,7 @@ func TestRegistryRawSQLSurvivesEviction(t *testing.T) {
 
 	// Reopen alpha: a fresh connection to the same file, same rows, still no
 	// sight of beta.
-	if err := r.Do(ctx, alpha, func(DB) error {
+	if err := r.With(ctx, alpha, func(DB) error {
 		conn := raw(alpha)
 		if conn == nil {
 			t.Fatal("reopened alpha has no connection")

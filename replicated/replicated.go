@@ -1,6 +1,6 @@
 // Package replicated makes orm's per-tenant databases durable.
 //
-// [db.Registry] resolves a tenant to a handle and bounds how many stay open. It
+// [db.Namespaces] resolves a tenant to a handle and bounds how many stay open. It
 // declares three seams and fills in none of them: Materialize on a local miss,
 // OnOpen and OnClose around a handle's life. This package fills them with
 // hanzoai/replicate — while the registry holds a tenant open, that tenant's
@@ -24,7 +24,7 @@
 //
 // REPLICATE_S3_ENDPOINT and friends, as every other hanzo service spells it (see
 // [replicate.AutoReplicate]). With none of it set, and no explicit RemoteURL,
-// [Registry] returns the plain local registry — the same construction path on a
+// [Namespaces] returns the plain local registry — the same construction path on a
 // laptop and in a cluster, minus durability.
 //
 // # The constraint that does not go away
@@ -50,9 +50,9 @@ import (
 	_ "github.com/hanzoai/replicate/s3"   // s3:// — production
 )
 
-// Config is a [db.RegistryConfig] plus where the durable copies live.
+// Config is a [db.NamespacesConfig] plus where the durable copies live.
 type Config[T io.Closer] struct {
-	db.RegistryConfig[T]
+	db.NamespacesConfig[T]
 
 	// RemoteURL is the root the tenant replicas live under: each tenant file
 	// streams to <RemoteURL>/<type>/<id>. Empty means "build it from the
@@ -70,12 +70,12 @@ type Config[T io.Closer] struct {
 	RemoteURL string
 }
 
-// Registry returns a tenant registry whose files are durable in object storage.
+// Namespaces returns a tenant registry whose files are durable in object storage.
 //
-// It is [db.NewRegistry] with the three durability seams filled in, and it
-// returns the same *db.Registry, so callers see one type whether or not
+// It is [db.NewNamespaces] with the three durability seams filled in, and it
+// returns the same *db.Namespaces, so callers see one type whether or not
 // replication is configured.
-func Registry[T io.Closer](cfg Config[T]) (*db.Registry[T], error) {
+func Namespaces[T io.Closer](cfg Config[T]) (*db.Namespaces[T], error) {
 	base := cfg.RemoteURL
 	if base == "" {
 		base = replicate.ReplicaURL("")
@@ -84,7 +84,7 @@ func Registry[T io.Closer](cfg Config[T]) (*db.Registry[T], error) {
 		// Nothing configured. Degrade to the local-only registry rather than
 		// error: durability is a deployment property, and a dev box that has to
 		// take a different code path to run is a dev box that drifts.
-		return db.NewRegistry(cfg.RegistryConfig)
+		return db.NewNamespaces(cfg.NamespacesConfig)
 	}
 	if cfg.Materialize != nil || cfg.OnOpen != nil || cfg.OnClose != nil {
 		// Overwriting them would turn a caller's hook into a silent no-op, and
@@ -93,13 +93,13 @@ func Registry[T io.Closer](cfg Config[T]) (*db.Registry[T], error) {
 		return nil, errors.New("replicated: Materialize/OnOpen/OnClose are owned by this package — leave them nil")
 	}
 
-	s := &store{base: base, live: make(map[db.Tenant]*replicate.DB)}
+	s := &store{base: base, live: make(map[db.Namespace]*replicate.DB)}
 	cfg.Materialize = s.materialize
 	// Replication is a property of the FILE, so the handle is dropped here and T
 	// never appears below this line.
-	cfg.OnOpen = func(t db.Tenant, path string, _ T) error { return s.start(t, path) }
-	cfg.OnClose = func(t db.Tenant, _ string, _ T) error { return s.stop(t) }
-	return db.NewRegistry(cfg.RegistryConfig)
+	cfg.OnOpen = func(t db.Namespace, path string, _ T) error { return s.start(t, path) }
+	cfg.OnClose = func(t db.Namespace, _ string, _ T) error { return s.stop(t) }
+	return db.NewNamespaces(cfg.NamespacesConfig)
 }
 
 // store owns the replication half of a tenant handle's life: one live stream per
@@ -108,13 +108,13 @@ type store struct {
 	base string
 
 	mu   sync.Mutex
-	live map[db.Tenant]*replicate.DB
+	live map[db.Namespace]*replicate.DB
 }
 
 // materialize restores a tenant's file from its replica before the registry
 // opens it. A tenant nothing has ever replicated leaves no file behind, which is
 // the registry's "new tenant, start empty".
-func (s *store) materialize(ctx context.Context, t db.Tenant, path string) error {
+func (s *store) materialize(ctx context.Context, t db.Namespace, path string) error {
 	u, err := s.urlFor(t)
 	if err != nil {
 		return err
@@ -123,7 +123,7 @@ func (s *store) materialize(ctx context.Context, t db.Tenant, path string) error
 	return err
 }
 
-func (s *store) start(t db.Tenant, path string) error {
+func (s *store) start(t db.Namespace, path string) error {
 	u, err := s.urlFor(t)
 	if err != nil {
 		return err
@@ -146,7 +146,7 @@ func (s *store) start(t db.Tenant, path string) error {
 	return nil
 }
 
-func (s *store) stop(t db.Tenant) error {
+func (s *store) stop(t db.Namespace) error {
 	s.mu.Lock()
 	rdb, ok := s.live[t]
 	delete(s.live, t)
@@ -166,7 +166,7 @@ func (s *store) stop(t db.Tenant) error {
 // The tenant goes into the URL's PATH, not onto the end of the string: the base
 // carries query parameters (endpoint, region), so concatenating would append the
 // tenant after "?endpoint=…" and quietly point every tenant at the bucket root.
-func (s *store) urlFor(t db.Tenant) (string, error) {
+func (s *store) urlFor(t db.Namespace) (string, error) {
 	// Type and ID must each be one path segment. The registry rejects anything
 	// else before it calls a hook, but this is the boundary where a tenant name
 	// becomes a key prefix and replicate path.Cleans what it is given, so a ".."
