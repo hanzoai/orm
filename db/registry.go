@@ -140,6 +140,21 @@ type RegistryConfig[T io.Closer] struct {
 	// returned by Close but does not prevent the handle being released.
 	OnClose func(t Tenant, path string, db T) error
 
+	// OnEvictError reports a handle that failed to shut down during eviction.
+	//
+	// Close returns its shutdown error to the caller; eviction has nobody to
+	// return to, so without this the error is discarded. That matters more here
+	// than anywhere else in the type: eviction IS the durability checkpoint. When
+	// OnClose is a final WAL flush to object storage, a failure means that
+	// tenant's writes are gone — and until now it happened with no error, no log
+	// and no signal of any kind, on the one path the whole "disk is a cache, S3
+	// is the truth" model depends on.
+	//
+	// Nil means those failures stay silent. That is a deliberate choice a caller
+	// has to make, not a default they back into: set it to log, alert, or refuse
+	// to evict further.
+	OnEvictError func(t Tenant, path string, err error)
+
 	// PathFor maps a tenant to its file path under Dir. Defaults to
 	// <Dir>/<type>/<id>.db.
 	PathFor func(dir string, t Tenant) string
@@ -385,7 +400,12 @@ func (r *Registry[T]) evict() {
 	r.mu.Unlock()
 
 	for _, e := range doomed {
-		r.shut(e)
+		// Not discarded: a failed shutdown here is a failed final flush, which
+		// is lost writes. Close() returns its error; eviction reports through
+		// the hook because it has no caller to return to.
+		if err := r.shut(e); err != nil && r.cfg.OnEvictError != nil {
+			r.cfg.OnEvictError(e.tenant, e.path, err)
+		}
 	}
 }
 
