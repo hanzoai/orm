@@ -36,6 +36,8 @@ orm/
 │   ├── zap.go          ZAP binary protocol driver (native: SQL/DocumentDB/KV/Datastore)
 │   ├── manager.go      Multi-tenant Manager (RegisterUserDB/RegisterOrgDB)
 │   └── time.go         Testable timeNow var
+├── replicated/         SEPARATE MODULE — durable tenant registry (see below)
+│   └── replicated.go   Registry[T]: binds Materialize/OnOpen/OnClose to hanzoai/replicate
 ├── val/                Validation
 │   ├── val.go          Validator, CheckContext, CheckString, ValidatePassword
 │   └── errors.go       Error, FieldError, NewError, NewFieldError
@@ -283,12 +285,52 @@ A registry that owns the whole lifecycle of a tenant handle:
   re-fetches it. Without this the "open per project/org" model leaks by design.
 - **Replicate.** Compose `hanzoai/replicate` per handle so every tenant file
   ships its WAL to S3 continuously, rather than one replicator over one big DB.
+  **Done — `orm/replicated` (v0.1.0).**
 - **KV in front** for hot reads, so eviction churn does not turn into S3 traffic.
 
 Then `commerce/db.Manager` collapses into it — that duplication disappears rather
 than being maintained in two places — and `hanzoai/git` embedding into
 `hanzoai/cloud` gets the same thing for free instead of inventing a third
 version.
+
+### Durability: `orm/replicated`, a separate module
+
+`db.Registry` declares three seams and fills in none of them — `Materialize` on
+a local miss, `OnOpen`/`OnClose` around a handle's life. `orm/replicated` fills
+them with `hanzoai/replicate`:
+
+    replicated.Registry(replicated.Config[db.DB]{
+        RegistryConfig: db.RegistryConfig[db.DB]{Dir: dir, MaxOpen: 64, Open: db.OpenSQLiteTenant},
+    })
+
+- **OnOpen** starts a stream for THAT tenant file at `<base>/<type>/<id>`.
+- **OnClose** flushes and stops it — the eviction checkpoint.
+- **Materialize** restores the file from that prefix; nothing there means a new
+  tenant, so the registry opens an empty database.
+
+One stream per FILE, never one over the directory: a replica URL is a key prefix
+whose LTX history belongs to a single database, and a directory-wide replicator
+cannot start when one tenant arrives and stop when that one is evicted. Per-file
+lifetime *is* the capability — it is what lets a node evict a tenant and any
+other node re-materialise it.
+
+**Why a separate module.** `hanzoai/replicate` brings the AWS/GCS/Azure SDKs
+with it. Putting the binding in `orm` proper would charge every consumer of the
+ORM for an import it may never use, so `orm` declares the seam and the dependency
+arrives with the capability. `require github.com/hanzoai/orm/replicated` and you
+have durability; do not and `orm`'s dependency graph is unchanged.
+
+**Configuration** is `REPLICATE_S3_ENDPOINT` and friends, as everywhere else.
+With none set (and no explicit `RemoteURL`) `replicated.Registry` returns the
+plain local registry — a laptop and a cluster run the same construction path.
+Encryption is fail-closed: with a destination configured and no
+`REPLICATE_AGE_RECIPIENT`, opening a tenant fails rather than streaming customer
+data in the clear.
+
+**One writer per tenant.** Two nodes holding one tenant open stream two histories
+to one prefix and the loser's writes are gone. Nothing in the registry enforces
+it; the tenant key is the shard key, so route a tenant to one node — the same
+constraint the repositories have, below.
 
 ### The constraint that does not go away
 
