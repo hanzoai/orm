@@ -72,6 +72,19 @@ type Namespaces[T io.Closer] struct {
 
 	// swept is when the idle sweep last ran, in the same units.
 	swept atomic.Int64
+
+	// draining is set by Close, and read by release to decide whether a
+	// reference hitting zero is worth announcing. A flag written once and read
+	// everywhere costs nothing to read — a counter of in-flight work would have
+	// to be WRITTEN on every claim and release, putting every tenant back on one
+	// contended cache line, which is the cost this type is shaped to avoid.
+	draining atomic.Bool
+
+	// drain carries those announcements. Buffered by one and sent to without
+	// blocking, so a release never waits and never has to know whether Close is
+	// listening; Close rechecks the references it cares about after every wake,
+	// so a coalesced signal cannot lose one.
+	drain chan struct{}
 }
 
 // Namespace names one database, e.g. "org/acme" or "user/123/notes". It is
@@ -178,8 +191,8 @@ type entry[T io.Closer] struct {
 	err    error
 }
 
-// ErrRegistryClosed is returned once the registry is closed.
-var ErrRegistryClosed = errors.New("db: registry closed")
+// ErrClosed is returned once the namespace set is closed.
+var ErrClosed = errors.New("db: namespaces closed")
 
 // NewNamespaces builds a Namespaces. Dir, a positive MaxOpen and Open are required
 // — an unbounded registry is the leak this type exists to prevent.
@@ -200,6 +213,7 @@ func NewNamespaces[T io.Closer](cfg NamespacesConfig[T]) (*Namespaces[T], error)
 		cfg:     cfg,
 		entries: make(map[Namespace]*entry[T]),
 		epoch:   time.Now(),
+		drain:   make(chan struct{}, 1),
 	}, nil
 }
 
@@ -281,9 +295,29 @@ func (r *Namespaces[T]) acquire(ctx context.Context, t Namespace) (*entry[T], er
 		return nil, err
 	}
 	if fresh {
-		r.fill(ctx, e)
+		// The open runs on a context detached from this caller. One caller
+		// triggers it but everyone asking for this tenant waits on the result,
+		// so binding it to whoever arrived first means a client disconnect
+		// fails unrelated requests with a cancellation that is nowhere in
+		// them. WithoutCancel keeps the values — tracing, tenant, deadlines a
+		// Materialize may read — and drops only the fate.
+		//
+		// In a goroutine so that the caller who triggered the open waits the
+		// same way as everyone else, rather than being the one caller who
+		// cannot walk away from it.
+		go r.fill(context.WithoutCancel(ctx), e)
 	}
-	<-e.ready // may still be opening; wait rather than open twice
+	// May still be opening; wait rather than open twice — but wait ON THIS
+	// CALLER'S TERMS. Materialize is a restore from object storage, so this is
+	// the longest wait in the type: a caller pinned to it holds a goroutine and
+	// a reference long after it has given up, and each retry parks another one.
+	// The pile-up is worst exactly when the backing store is slowest.
+	select {
+	case <-e.ready:
+	case <-ctx.Done():
+		r.release(e)
+		return nil, ctx.Err()
+	}
 	if e.err != nil {
 		r.release(e)
 		return nil, e.err
@@ -302,7 +336,7 @@ func (r *Namespaces[T]) claim(t Namespace) (*entry[T], bool, error) {
 	r.mu.RLock()
 	if r.closed {
 		r.mu.RUnlock()
-		return nil, false, ErrRegistryClosed
+		return nil, false, ErrClosed
 	}
 	e, ok := r.entries[t]
 	if ok {
@@ -316,7 +350,7 @@ func (r *Namespaces[T]) claim(t Namespace) (*entry[T], bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
-		return nil, false, ErrRegistryClosed
+		return nil, false, ErrClosed
 	}
 	if e, ok := r.entries[t]; ok { // opened while we swapped read lock for write
 		e.refs.Add(1)
@@ -380,7 +414,15 @@ func (r *Namespaces[T]) release(e *entry[T]) {
 	// must already be able to see the timestamp that goes with it, or it would
 	// judge a handle that has just finished by how long ago it STARTED.
 	e.lastUsed.Store(now)
-	e.refs.Add(-1)
+	if e.refs.Add(-1) == 0 && r.draining.Load() {
+		// Close is waiting for exactly this. Non-blocking: if a signal is
+		// already pending, Close has not consumed it yet and will recheck this
+		// entry when it does.
+		select {
+		case r.drain <- struct{}{}:
+		default:
+		}
+	}
 
 	// No lock in the common case. There is only ever something to close when
 	// the bound is exceeded or the sweep comes due, and both questions are
@@ -462,14 +504,14 @@ func (r *Namespaces[T]) coldestIdle() *entry[T] {
 	var coldest int64
 	// Scan everything when a miss is expensive, sample when it is cheap.
 	//
-	// Sampling saves real time — measured at 6.4ms per 50k ops — but it evicts
-	// a hot handle whenever the true coldest was not in the sample, costing
-	// +627 misses per 50k on a 90/10 working set (13.01% -> 14.26%,
-	// BenchmarkRegistryHitRate). When Materialize is nil a miss is a local
-	// open and that trade is clearly worth it.
+	// Sampling saves real time — 12.6ms per 50k ops — but it evicts a hot
+	// handle whenever the true coldest was not in the sample, costing +710
+	// misses per 50k on a 90/10 working set: 13.01% exact against 14.43%
+	// sampled, the two regimes of BenchmarkRegistryHitRate. When Materialize
+	// is nil a miss is a local open and that trade is clearly worth it.
 	//
 	// When Materialize is set a miss is a restore from object storage. At even
-	// 30ms per GET those 627 extra misses are ~19 SECONDS spent to save 6.4ms
+	// 30ms per GET those 710 extra misses are ~21 SECONDS spent to save 12.6ms
 	// — the optimisation inverts. So the regime picks itself from a fact the
 	// registry already has, rather than from a knob a caller has to know to
 	// turn.
@@ -522,15 +564,32 @@ func (r *Namespaces[T]) shut(e *entry[T]) error {
 // Open reports how many tenant databases are currently held open.
 func (r *Namespaces[T]) Open() int { return int(r.held.Load()) }
 
-// Close shuts every open database. Further calls to Do fail with
-// ErrRegistryClosed.
+// Close shuts every open database. Further calls to With fail with
+// ErrClosed.
+//
+// It DRAINS: a database still inside a With is not closed until that With
+// returns.
+// evict has always refused to touch an entry with in-flight users — "a slow
+// request is never yanked out from under its caller" — and shutdown is the one
+// moment every in-flight request meets that promise at once, so it is the last
+// place to break it. Closing under a live query does not merely fail that
+// query; the handle it is reading through goes away beneath it.
+//
+// The wait is unbounded on purpose. With releases its reference with defer, so
+// this drains unless a caller's fn never returns — and a deadline here would be
+// this type inventing a shutdown policy it cannot know. A caller that wants a
+// bounded drain owns that decision and can impose it from outside.
 func (r *Namespaces[T]) Close() error {
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
 		return nil
 	}
+	// Ordered: no new claims, then announce that drops are worth reporting,
+	// then take the entries. A claim that slipped in before closed was set is
+	// already counted in refs, so the drain below covers it.
 	r.closed = true
+	r.draining.Store(true)
 	all := make([]*entry[T], 0, len(r.entries))
 	for _, e := range r.entries {
 		all = append(all, e)
@@ -541,6 +600,9 @@ func (r *Namespaces[T]) Close() error {
 
 	var firstErr error
 	for _, e := range all {
+		for e.refs.Load() > 0 {
+			<-r.drain // woken by any release; the loop rechecks this entry
+		}
 		if err := r.shut(e); err != nil && firstErr == nil {
 			firstErr = err
 		}

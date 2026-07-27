@@ -255,8 +255,8 @@ func TestRegistryCloseShutsEverything(t *testing.T) {
 	if !held.(*fakeDB).closed.Load() {
 		t.Error("Close must close open handles")
 	}
-	if err := r.With(ctx, Namespace("org/b"), func(DB) error { return nil }); !errors.Is(err, ErrRegistryClosed) {
-		t.Errorf("Do after Close = %v, want ErrRegistryClosed", err)
+	if err := r.With(ctx, Namespace("org/b"), func(DB) error { return nil }); !errors.Is(err, ErrClosed) {
+		t.Errorf("With after Close = %v, want ErrClosed", err)
 	}
 }
 
