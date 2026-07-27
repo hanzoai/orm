@@ -22,15 +22,15 @@ var (
 	benchFn        = func(DB) error { return nil }
 )
 
-func benchRegistry(b *testing.B, cfg RegistryConfig[DB]) *Registry[DB] {
+func benchRegistry(b *testing.B, cfg NamespacesConfig[DB]) *Namespaces[DB] {
 	b.Helper()
 	if cfg.Dir == "" {
 		cfg.Dir = b.TempDir()
 	}
 	if cfg.Open == nil {
-		cfg.Open = func(Tenant, string) (DB, error) { return benchHandle, nil }
+		cfg.Open = func(Namespace, string) (DB, error) { return benchHandle, nil }
 	}
-	r, err := NewRegistry(cfg)
+	r, err := NewNamespaces(cfg)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -38,20 +38,20 @@ func benchRegistry(b *testing.B, cfg RegistryConfig[DB]) *Registry[DB] {
 	return r
 }
 
-func benchTenants(n int) []Tenant {
-	ts := make([]Tenant, n)
+func benchTenants(n int) []Namespace {
+	ts := make([]Namespace, n)
 	for i := range ts {
-		ts[i] = Tenant{Type: "org", ID: strconv.Itoa(i)}
+		ts[i] = Namespace("org" + "/" + strconv.Itoa(i))
 	}
 	return ts
 }
 
 // warm opens every tenant once, so the benchmark that follows measures hits
 // rather than opens.
-func warm(b *testing.B, r *Registry[DB], ts []Tenant) {
+func warm(b *testing.B, r *Namespaces[DB], ts []Namespace) {
 	b.Helper()
 	for _, t := range ts {
-		if err := r.Do(context.Background(), t, benchFn); err != nil {
+		if err := r.With(context.Background(), t, benchFn); err != nil {
 			b.Fatalf("warm %s: %v", t, err)
 		}
 	}
@@ -77,13 +77,13 @@ func BenchmarkRegistryWarmHit(b *testing.B) {
 		for _, idle := range []time.Duration{0, time.Hour} {
 			b.Run(fmt.Sprintf("resident=%d/idlettl=%s", resident, idleName(idle)), func(b *testing.B) {
 				ts := benchTenants(resident)
-				r := benchRegistry(b, RegistryConfig[DB]{MaxOpen: resident, IdleTTL: idle})
+				r := benchRegistry(b, NamespacesConfig[DB]{MaxOpen: resident, IdleTTL: idle})
 				warm(b, r, ts)
 				hot := ts[0] // one hot tenant; the rest are resident weight
 				ctx := context.Background()
 				b.ResetTimer()
 				for i := 0; i < b.N; i++ {
-					if err := r.Do(ctx, hot, benchFn); err != nil {
+					if err := r.With(ctx, hot, benchFn); err != nil {
 						b.Fatal(err)
 					}
 				}
@@ -100,7 +100,7 @@ func BenchmarkRegistryConcurrentHits(b *testing.B) {
 	for _, tenants := range []int{1, 64, 1024} {
 		b.Run(fmt.Sprintf("tenants=%d", tenants), func(b *testing.B) {
 			ts := benchTenants(tenants)
-			r := benchRegistry(b, RegistryConfig[DB]{MaxOpen: tenants})
+			r := benchRegistry(b, NamespacesConfig[DB]{MaxOpen: tenants})
 			warm(b, r, ts)
 			ctx := context.Background()
 			var seq atomic.Int64
@@ -109,7 +109,7 @@ func BenchmarkRegistryConcurrentHits(b *testing.B) {
 				// Stride the start so goroutines are not all on the same tenant.
 				i := int(seq.Add(1)) * 7919
 				for pb.Next() {
-					if err := r.Do(ctx, ts[i%len(ts)], benchFn); err != nil {
+					if err := r.With(ctx, ts[i%len(ts)], benchFn); err != nil {
 						b.Error(err)
 						return
 					}
@@ -127,12 +127,12 @@ func BenchmarkRegistryConcurrentHits(b *testing.B) {
 func BenchmarkRegistryColdMiss(b *testing.B) {
 	for _, mat := range []bool{false, true} {
 		b.Run(fmt.Sprintf("materialize=%t", mat), func(b *testing.B) {
-			cfg := RegistryConfig[DB]{MaxOpen: 1}
+			cfg := NamespacesConfig[DB]{MaxOpen: 1}
 			if mat {
 				// A restore that writes nothing is legal ("new tenant, start
 				// empty") and keeps the number about the registry rather than
 				// about how fast this disk can copy a file.
-				cfg.Materialize = func(context.Context, Tenant, string) error { return nil }
+				cfg.Materialize = func(context.Context, Namespace, string) error { return nil }
 			}
 			r := benchRegistry(b, cfg)
 			// MaxOpen 1 against a pool of 16: nothing is ever resident, so every
@@ -141,7 +141,7 @@ func BenchmarkRegistryColdMiss(b *testing.B) {
 			ctx := context.Background()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				if err := r.Do(ctx, ts[i%len(ts)], benchFn); err != nil {
+				if err := r.With(ctx, ts[i%len(ts)], benchFn); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -158,11 +158,11 @@ func BenchmarkRegistryEvictionThrash(b *testing.B) {
 		b.Run(fmt.Sprintf("maxopen=%d", maxOpen), func(b *testing.B) {
 			// Four times the bound, so the round trip never finds a warm handle.
 			ts := benchTenants(maxOpen * 4)
-			r := benchRegistry(b, RegistryConfig[DB]{MaxOpen: maxOpen})
+			r := benchRegistry(b, NamespacesConfig[DB]{MaxOpen: maxOpen})
 			ctx := context.Background()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				if err := r.Do(ctx, ts[i%len(ts)], benchFn); err != nil {
+				if err := r.With(ctx, ts[i%len(ts)], benchFn); err != nil {
 					b.Fatal(err)
 				}
 			}

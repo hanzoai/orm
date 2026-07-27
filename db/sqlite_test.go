@@ -290,24 +290,23 @@ func TestSQLiteDBKeys(t *testing.T) {
 	}
 }
 
-func TestSQLiteDBTenantInfo(t *testing.T) {
+func TestSQLiteDBNamespaceReachesKeys(t *testing.T) {
 	dir := t.TempDir()
 	db, err := NewSQLiteDB(&SQLiteDBConfig{
-		Path:       filepath.Join(dir, "test.db"),
-		Config:     SQLiteConfig{BusyTimeout: 5000, JournalMode: "WAL"},
-		TenantID:   "org123",
-		TenantType: "org",
+		Path:      filepath.Join(dir, "test.db"),
+		Config:    SQLiteConfig{BusyTimeout: 5000, JournalMode: "WAL"},
+		Namespace: "org/org123",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
 
-	if db.TenantID() != "org123" {
-		t.Errorf("expected tenant org123, got %s", db.TenantID())
-	}
-	if db.TenantType() != "org" {
-		t.Errorf("expected type org, got %s", db.TenantType())
+	// The namespace is carried on every key the driver mints — that is the only
+	// reason the driver knows it at all, now that the split accessors are gone.
+	k := db.NewKey("thing", "abc", 0, nil)
+	if got := k.Namespace(); got != "org/org123" {
+		t.Errorf("key namespace = %q, want org/org123", got)
 	}
 }
 
