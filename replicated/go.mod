@@ -3,7 +3,7 @@ module github.com/hanzoai/orm/replicated
 go 1.26.4
 
 require (
-	github.com/hanzoai/orm v0.6.9
+	github.com/hanzoai/orm v0.6.14
 	github.com/hanzoai/replicate v0.9.6
 	github.com/luxfi/age v1.6.0
 )
