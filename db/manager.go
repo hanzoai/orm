@@ -16,8 +16,8 @@ type Manager struct {
 	// Organization databases (orgID -> DB)
 	orgDBs map[string]DB
 
-	// Analytics store (shared)
-	analyticsStore AnalyticsStore
+	// Analytics warehouse, shared by every tenant
+	datastore Datastore
 
 	closed bool
 }
@@ -44,14 +44,19 @@ func NewManager(cfg *Config) (*Manager, error) {
 	return m, nil
 }
 
-// SetAnalyticsStore sets the analytics store for the manager.
-func (m *Manager) SetAnalyticsStore(store AnalyticsStore) {
-	m.analyticsStore = store
+// SetDatastore attaches the analytics warehouse. One warehouse serves every
+// tenant, so unlike the per-tenant databases it is set once.
+func (m *Manager) SetDatastore(ds Datastore) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.datastore = ds
 }
 
-// Analytics returns the analytics store.
-func (m *Manager) Analytics() AnalyticsStore {
-	return m.analyticsStore
+// Datastore returns the analytics warehouse, or nil when none is attached.
+func (m *Manager) Datastore() Datastore {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.datastore
 }
 
 // RegisterUserDB registers a user database.
@@ -124,8 +129,8 @@ func (m *Manager) Close() error {
 		}
 	}
 
-	if m.analyticsStore != nil {
-		if err := m.analyticsStore.Close(); err != nil {
+	if m.datastore != nil {
+		if err := m.datastore.Close(); err != nil {
 			lastErr = err
 		}
 	}
