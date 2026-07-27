@@ -56,6 +56,22 @@ type Namespaces[T io.Closer] struct {
 	// interleave with a claim: either the evictor sees the claim and leaves the
 	// entry alone, or the claimer arrives after the entry is out of the map and
 	// opens it afresh.
+	//
+	// This makes a hit CHEAP. It does not make it SCALE, and the distinction is
+	// worth stating because the shape of the code invites the opposite reading.
+	// Both halves of a hit write shared memory: RLock increments the reader
+	// count on this one RWMutex, and the claim increments refs on the entry. So
+	// concurrent hits on ONE namespace are cache-line ping-pong by construction
+	// — BenchmarkRegistryConcurrentHits, -cpu=1,2,4,10:
+	//
+	//	namespaces=1     70ns  115ns  216ns  239ns   <- 3.4x WORSE with cores
+	//	namespaces=1024 109ns   83ns  139ns  130ns   <- flat
+	//
+	// Spread across namespaces it is flat; funnelled into one it degrades. That
+	// is inherent to reference-counting a shared handle, not a lock that could
+	// be swapped out, and it is the right trade here: this type exists to bound
+	// open files across MANY namespaces, which is the flat column. A single
+	// namespace hot enough to feel this wants its own node, not a cleverer lock.
 	mu      sync.RWMutex
 	entries map[Namespace]*entry[T]
 	closed  bool
