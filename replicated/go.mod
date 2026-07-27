@@ -3,7 +3,7 @@ module github.com/hanzoai/orm/replicated
 go 1.26.4
 
 require (
-	github.com/hanzoai/orm v0.6.14
+	github.com/hanzoai/orm v0.6.15
 	github.com/hanzoai/replicate v0.9.6
 	github.com/luxfi/age v1.6.0
 )
@@ -66,8 +66,9 @@ require (
 	github.com/valyala/fasthttp v1.72.0 // indirect
 	github.com/wasilibs/go-re2 v1.3.0 // indirect
 	github.com/zap-proto/go v1.1.0 // indirect
-	github.com/zap-proto/http v0.2.0 // indirect
+	github.com/zap-proto/http v0.2.2 // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect
+	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/mod v0.36.0 // indirect
 	golang.org/x/net v0.56.0 // indirect
