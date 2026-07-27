@@ -32,15 +32,18 @@ import (
 type ZapBackend int
 
 const (
-	// ZapSQL connects to hanzo/sql (PostgreSQL fork) on port 9651.
+	// ZapSQL connects to hanzo/sql, the relational transactional backend, on
+	// port 9651.
 	ZapSQL ZapBackend = iota
-	// ZapDocumentDB connects to hanzo/documentdb (FerretDB fork) on port 9654.
-	// Provides MongoDB-style document semantics over PostgreSQL storage.
-	// Clients who "think mongo" use this; data lives in hanzo/sql.
+	// ZapDocumentDB connects to hanzo/documentdb on port 9654. It serves
+	// document semantics over relational storage, for clients that model data
+	// as documents; the rows live in hanzo/sql.
 	ZapDocumentDB
-	// ZapKV connects to hanzo/kv (Valkey fork) on port 9653.
+	// ZapKV connects to hanzo/kv, the key-value cache and session backend, on
+	// port 9653.
 	ZapKV
-	// ZapDatastore connects to hanzo/datastore (ClickHouse fork) on port 9655.
+	// ZapDatastore connects to hanzo/datastore, the columnar analytics
+	// backend, on port 9655.
 	ZapDatastore
 )
 
