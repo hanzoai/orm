@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -258,5 +259,23 @@ func TestRegistryCloseShutsEverything(t *testing.T) {
 	}
 	if err := r.Do(ctx, Tenant{Type: "org", ID: "b"}, func(DB) error { return nil }); !errors.Is(err, ErrRegistryClosed) {
 		t.Errorf("Do after Close = %v, want ErrRegistryClosed", err)
+	}
+}
+
+func TestRegistryHoldsBoundAboveSampleSize(t *testing.T) {
+	// Eviction picks its victim from a bounded sample, so the case that matters
+	// is more open handles than samples. Which handle gets closed is allowed to
+	// be approximate up there; how many stay open is not — the bound is the
+	// whole reason this type exists.
+	const maxOpen = evictSamples * 2
+	r, _ := fakeRegistry(t, RegistryConfig[DB]{MaxOpen: maxOpen})
+	ctx := context.Background()
+	for i := 0; i < 20*maxOpen; i++ {
+		if err := r.Do(ctx, Tenant{Type: "org", ID: strconv.Itoa(i)}, func(DB) error { return nil }); err != nil {
+			t.Fatalf("Do %d: %v", i, err)
+		}
+		if got := r.Open(); got > maxOpen {
+			t.Fatalf("%d handles open after %d tenants, bound is %d", got, i+1, maxOpen)
+		}
 	}
 }
