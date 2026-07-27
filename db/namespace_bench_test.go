@@ -38,7 +38,7 @@ func benchRegistry(b *testing.B, cfg NamespacesConfig[DB]) *Namespaces[DB] {
 	return r
 }
 
-func benchTenants(n int) []Namespace {
+func benchSpaces(n int) []Namespace {
 	ts := make([]Namespace, n)
 	for i := range ts {
 		ts[i] = Namespace("org" + "/" + strconv.Itoa(i))
@@ -68,15 +68,15 @@ func idleName(d time.Duration) string {
 // whose database is already open, so all the registry does is bookkeeping.
 //
 // The resident dimension is here because eviction runs on every release. If
-// that scan is O(resident), the common path gets slower the more tenants a node
-// holds — exactly backwards for the type whose job is holding many tenants.
+// that scan is O(resident), the common path gets slower the more spaces a node
+// holds — exactly backwards for the type whose job is holding many spaces.
 // IdleTTL is the other axis for the same reason: the idle sweep walks the LRU
 // unconditionally, and production runs with a TTL set.
 func BenchmarkRegistryWarmHit(b *testing.B) {
 	for _, resident := range []int{1, 64, 1024} {
 		for _, idle := range []time.Duration{0, time.Hour} {
 			b.Run(fmt.Sprintf("resident=%d/idlettl=%s", resident, idleName(idle)), func(b *testing.B) {
-				ts := benchTenants(resident)
+				ts := benchSpaces(resident)
 				r := benchRegistry(b, NamespacesConfig[DB]{MaxOpen: resident, IdleTTL: idle})
 				warm(b, r, ts)
 				hot := ts[0] // one hot tenant; the rest are resident weight
@@ -97,10 +97,10 @@ func BenchmarkRegistryWarmHit(b *testing.B) {
 // work needs to be serialised — the databases are disjoint — so whatever this
 // costs above the single-threaded warm hit is contention on the registry lock.
 func BenchmarkRegistryConcurrentHits(b *testing.B) {
-	for _, tenants := range []int{1, 64, 1024} {
-		b.Run(fmt.Sprintf("tenants=%d", tenants), func(b *testing.B) {
-			ts := benchTenants(tenants)
-			r := benchRegistry(b, NamespacesConfig[DB]{MaxOpen: tenants})
+	for _, spaces := range []int{1, 64, 1024} {
+		b.Run(fmt.Sprintf("spaces=%d", spaces), func(b *testing.B) {
+			ts := benchSpaces(spaces)
+			r := benchRegistry(b, NamespacesConfig[DB]{MaxOpen: spaces})
 			warm(b, r, ts)
 			ctx := context.Background()
 			var seq atomic.Int64
@@ -137,7 +137,7 @@ func BenchmarkRegistryColdMiss(b *testing.B) {
 			r := benchRegistry(b, cfg)
 			// MaxOpen 1 against a pool of 16: nothing is ever resident, so every
 			// iteration takes the open path.
-			ts := benchTenants(16)
+			ts := benchSpaces(16)
 			ctx := context.Background()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
@@ -157,7 +157,7 @@ func BenchmarkRegistryEvictionThrash(b *testing.B) {
 	for _, maxOpen := range []int{8, 128, 1024} {
 		b.Run(fmt.Sprintf("maxopen=%d", maxOpen), func(b *testing.B) {
 			// Four times the bound, so the round trip never finds a warm handle.
-			ts := benchTenants(maxOpen * 4)
+			ts := benchSpaces(maxOpen * 4)
 			r := benchRegistry(b, NamespacesConfig[DB]{MaxOpen: maxOpen})
 			ctx := context.Background()
 			b.ResetTimer()
@@ -176,20 +176,20 @@ func BenchmarkRegistryEvictionThrash(b *testing.B) {
 // one — that is the switch doing its job.
 func BenchmarkRegistryHitRateWithMaterialize(b *testing.B) {
 	const (
-		tenants = 1024
+		spaces  = 1024
 		hot     = 102
 		maxOpen = 128
 		ops     = 50000
 	)
 	var opens int64
-	r, err := NewRegistry(RegistryConfig[*fakeDB]{
+	r, err := NewNamespaces(NamespacesConfig[*fakeDB]{
 		Dir:     b.TempDir(),
 		MaxOpen: maxOpen,
 		// Present, and trivial: this benchmark measures the miss COUNT, and a
 		// real S3 GET here would only add noise to a number we already know how
 		// to price (~30ms each).
-		Materialize: func(context.Context, Tenant, string) error { return nil },
-		Open: func(t Tenant, path string) (*fakeDB, error) {
+		Materialize: func(context.Context, Namespace, string) error { return nil },
+		Open: func(t Namespace, path string) (*fakeDB, error) {
 			atomic.AddInt64(&opens, 1)
 			return &fakeDB{tenant: t}, nil
 		},
@@ -211,9 +211,9 @@ func BenchmarkRegistryHitRateWithMaterialize(b *testing.B) {
 			if next()%10 < 9 {
 				id = next() % hot
 			} else {
-				id = next() % tenants
+				id = next() % spaces
 			}
-			_ = r.Do(ctx, Tenant{Type: "org", ID: fmt.Sprint(id)}, func(*fakeDB) error { return nil })
+			_ = r.With(ctx, Namespace("org/"+fmt.Sprint(id)), func(*fakeDB) error { return nil })
 		}
 		b.ReportMetric(float64(atomic.LoadInt64(&opens))*100/float64(ops), "miss%")
 	}
