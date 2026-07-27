@@ -431,7 +431,24 @@ column type. orm cannot replace them and must not try. Same for
 `sql.Result`/`sql.Rows` in git's `models/db.SQLSession` interface, which is
 deliberately backend-agnostic and expresses its result types in stdlib terms.
 
-`sql.ErrNoRows` is the one that *is* worth converting: 176 sites in cloud, 68 in
+> **Corrected 2026-07-27.** base's symbol counts here were exactly 2x inflated:
+> the `.claude/worktrees/` exclusion was applied to *file* counts but not to
+> *symbol* counts, so every duplicated checkout was counted twice
+> (`sql.ErrNoRows` 68 -> 39, `sql.Scanner` 12 -> 6). Reproduce with the
+> exclusion actually applied:
+>
+> ```
+> grep -rn 'sql\.ErrNoRows' --include='*.go' ~/work/hanzo/base \
+>   | grep -v -e vendor -e '\.claude' | wc -l      # 39
+> grep -rn 'sql\.ErrNoRows' --include='*.go' ~/work/hanzo/cloud \
+>   | grep -v vendor | wc -l                        # 176
+> ```
+>
+> The original "reproduce the numbers" block contained three commands and none
+> of the symbol greps — the numbers a reader could not re-run were exactly the
+> wrong ones. Numbers that cannot be reproduced are not measurements.
+
+`sql.ErrNoRows` is the one that *is* worth converting: 176 sites in cloud, 39 in
 base. See "Gap in orm" below — it needs a fix in orm first.
 
 So the honest target is **"no `database/sql` import in application code"**, not
@@ -465,11 +482,20 @@ ZAP listener today (documented above under the ZAP driver). Analytics goes
 
 ### What orm genuinely cannot express
 
-Verified against `dbx@v1.17.1` source, not assumed.
+Verified against `dbx@v1.17.2` source (orm pinned v1.16.0 when this was first
+written — the version named here was wrong, and so was the Upsert finding below).
 
-- **Upsert.** dbx has no `Upsert`/`OnConflict` builder anywhere in `db.go`,
-  `query.go`, `select.go`, `model_query.go`. 58 `ON CONFLICT ... DO UPDATE`
-  sites in cloud, 1 in base. Raw string, unavoidable today.
+- **Upsert. CLOSED — this entry was wrong.** dbx *does* have an `Upsert`
+  builder, declared on the `Builder` interface (`builder.go:54`) and implemented
+  by Postgres (`builder_pgsql.go:57`). What was missing was the SQLite override,
+  so SQLite callers fell through to `BaseBuilder.Upsert` and got
+  `LastError = "Upsert is not supported"` — read that, concluded the builder
+  could not express it, and hand-wrote raw SQL. SQLite has had the syntax since
+  3.24 (2018). Fixed in dbx v1.17.2 as a ~40-line override copied from the
+  Postgres one; orm pins it. The 58 cloud sites and 1 base site are now
+  convertible, and base's site is on the pgx path where `dbx.Upsert` already
+  worked. **Do not treat a "not supported" error from a package we own as a
+  constraint — check whether it is just an unimplemented override.**
 - **`RETURNING`.** No builder. orm's own SQLite driver uses it internally for
   `CreateIfAbsent` (that is exactly why the created-signal is driver-independent),
   but there is no caller-facing form.
@@ -535,7 +561,8 @@ the honest measure of how far the builder still has to go.
 ### Gap in orm that blocks the highest-value mechanical win
 
 `orm.ErrNotFound` is `errors.New("orm: entity not found")` — unrelated to
-`sql.ErrNoRows`. There are 244 `sql.ErrNoRows` comparisons across cloud and base.
+`sql.ErrNoRows`. There are 215 `sql.ErrNoRows` comparisons across cloud and base
+(176 + 39).
 Today a store cannot flip its return value without a flag-day across every
 caller, which turns a trivially mechanical change into a coordinated one.
 
