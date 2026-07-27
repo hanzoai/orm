@@ -431,9 +431,26 @@ const evictSamples = 16
 func (r *Registry[T]) coldestIdle() *entry[T] {
 	var cold *entry[T]
 	var coldest int64
+	// Scan everything when a miss is expensive, sample when it is cheap.
+	//
+	// Sampling saves real time — measured at 6.4ms per 50k ops — but it evicts
+	// a hot handle whenever the true coldest was not in the sample, costing
+	// +627 misses per 50k on a 90/10 working set (13.01% -> 14.26%,
+	// BenchmarkRegistryHitRate). When Materialize is nil a miss is a local
+	// open and that trade is clearly worth it.
+	//
+	// When Materialize is set a miss is a restore from object storage. At even
+	// 30ms per GET those 627 extra misses are ~19 SECONDS spent to save 6.4ms
+	// — the optimisation inverts. So the regime picks itself from a fact the
+	// registry already has, rather than from a knob a caller has to know to
+	// turn.
+	limit := evictSamples
+	if r.cfg.Materialize != nil {
+		limit = len(r.entries)
+	}
 	seen := 0
 	for _, e := range r.entries {
-		if seen++; seen > evictSamples {
+		if seen++; seen > limit {
 			break
 		}
 		if e.refs.Load() != 0 {
