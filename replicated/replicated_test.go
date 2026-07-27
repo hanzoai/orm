@@ -28,13 +28,13 @@ func plaintextEnv(t *testing.T) {
 	t.Setenv("REPLICATE_SYNC_INTERVAL", syncInterval.String())
 }
 
-func localCfg(dir string) db.RegistryConfig[db.DB] {
-	return db.RegistryConfig[db.DB]{Dir: dir, MaxOpen: 2, Open: db.OpenSQLiteTenant}
+func localCfg(dir string) db.NamespacesConfig[db.DB] {
+	return db.NamespacesConfig[db.DB]{Dir: dir, MaxOpen: 2, Open: db.OpenNamespace}
 }
 
-func put(t *testing.T, r *db.Registry[db.DB], tn db.Tenant, id, text string) {
+func put(t *testing.T, r *db.Namespaces[db.DB], tn db.Namespace, id, text string) {
 	t.Helper()
-	err := r.Do(context.Background(), tn, func(d db.DB) error {
+	err := r.With(context.Background(), tn, func(d db.DB) error {
 		_, err := d.Put(context.Background(), d.NewKey("note", id, 0, nil), &note{Text: text})
 		return err
 	})
@@ -43,10 +43,10 @@ func put(t *testing.T, r *db.Registry[db.DB], tn db.Tenant, id, text string) {
 	}
 }
 
-func get(t *testing.T, r *db.Registry[db.DB], tn db.Tenant, id string) (string, error) {
+func get(t *testing.T, r *db.Namespaces[db.DB], tn db.Namespace, id string) (string, error) {
 	t.Helper()
 	var got note
-	err := r.Do(context.Background(), tn, func(d db.DB) error {
+	err := r.With(context.Background(), tn, func(d db.DB) error {
 		return d.Get(context.Background(), d.NewKey("note", id, 0, nil), &got)
 	})
 	return got.Text, err
@@ -58,13 +58,13 @@ func TestLocalOnlyWithoutRemote(t *testing.T) {
 	t.Setenv("REPLICATE_S3_ENDPOINT", "")
 	dir := t.TempDir()
 
-	r, err := Registry(Config[db.DB]{RegistryConfig: localCfg(dir)})
+	r, err := Namespaces(Config[db.DB]{NamespacesConfig: localCfg(dir)})
 	if err != nil {
-		t.Fatalf("Registry: %v", err)
+		t.Fatalf("Namespaces: %v", err)
 	}
 	defer r.Close()
 
-	tn := db.Tenant{Type: "org", ID: "acme"}
+	tn := db.Namespace("org/acme")
 	put(t, r, tn, "n1", "local")
 	if got, err := get(t, r, tn, "n1"); err != nil || got != "local" {
 		t.Fatalf("get = %q, %v; want %q", got, err, "local")
@@ -74,11 +74,11 @@ func TestLocalOnlyWithoutRemote(t *testing.T) {
 // TestRefusesCallerHooks: the three seams are one mechanism. Taking one from a
 // caller and silently dropping it is how a "durable" registry ends up not being.
 func TestRefusesCallerHooks(t *testing.T) {
-	cfg := Config[db.DB]{RegistryConfig: localCfg(t.TempDir()), RemoteURL: "file://" + t.TempDir()}
-	cfg.OnOpen = func(db.Tenant, string, db.DB) error { return nil }
+	cfg := Config[db.DB]{NamespacesConfig: localCfg(t.TempDir()), RemoteURL: "file://" + t.TempDir()}
+	cfg.OnOpen = func(db.Namespace, string, db.DB) error { return nil }
 
-	if _, err := Registry(cfg); err == nil {
-		t.Fatal("Registry accepted a caller-supplied OnOpen and would have dropped it")
+	if _, err := Namespaces(cfg); err == nil {
+		t.Fatal("Namespaces accepted a caller-supplied OnOpen and would have dropped it")
 	}
 }
 
@@ -88,10 +88,10 @@ func TestStreamIsPerTenantFile(t *testing.T) {
 	plaintextEnv(t)
 	dir := t.TempDir()
 	remote := filepath.Join(dir, "remote")
-	s := &store{base: "file://" + remote, live: make(map[db.Tenant]*replicate.DB)}
+	s := &store{base: "file://" + remote, live: make(map[db.Namespace]*replicate.DB)}
 
-	a := db.Tenant{Type: "org", ID: "a"}
-	b := db.Tenant{Type: "user", ID: "a"} // same id, different keyspace
+	a := db.Namespace("org/a")
+	b := db.Namespace("user/a") // same id, different keyspace
 	pathA, pathB := tenantFile(t, dir, a, "in-a"), tenantFile(t, dir, b, "in-b")
 
 	if err := s.start(a, pathA); err != nil {
@@ -125,7 +125,7 @@ func TestStreamIsPerTenantFile(t *testing.T) {
 
 	// Each tenant's history is under its own prefix, so an id shared across
 	// keyspaces cannot land in one place.
-	for _, tn := range []db.Tenant{a, b} {
+	for _, tn := range []db.Namespace{a, b} {
 		if _, err := os.Stat(filepath.Join(remote, tn.Type, tn.ID, "ltx")); err != nil {
 			t.Fatalf("no replica history for %s: %v", tn, err)
 		}
@@ -141,17 +141,17 @@ func TestEvictionStopsStreaming(t *testing.T) {
 	ctx := context.Background()
 	dir, remote := t.TempDir(), t.TempDir()
 
-	cfg := Config[db.DB]{RegistryConfig: localCfg(dir), RemoteURL: "file://" + remote}
+	cfg := Config[db.DB]{NamespacesConfig: localCfg(dir), RemoteURL: "file://" + remote}
 	cfg.MaxOpen = 1
-	r, err := Registry(cfg)
+	r, err := Namespaces(cfg)
 	if err != nil {
-		t.Fatalf("Registry: %v", err)
+		t.Fatalf("Namespaces: %v", err)
 	}
 	defer r.Close()
 
-	a := db.Tenant{Type: "org", ID: "evicted"}
+	a := db.Namespace("org/evicted")
 	put(t, r, a, "n1", "before-evict")
-	put(t, r, db.Tenant{Type: "org", ID: "other"}, "n1", "b") // MaxOpen 1: evicts a
+	put(t, r, db.Namespace("org/other"), "n1", "b") // MaxOpen 1: evicts a
 	if r.Open() != 1 {
 		t.Fatalf("open handles = %d, want 1", r.Open())
 	}
@@ -174,7 +174,7 @@ func TestEvictionStopsStreaming(t *testing.T) {
 		t.Fatalf("restore %s: ok=%v err=%v", u, ok, err)
 	}
 
-	d, err := db.OpenSQLiteTenant(a, restored)
+	d, err := db.OpenNamespace(a, restored)
 	if err != nil {
 		t.Fatalf("open restored: %v", err)
 	}
@@ -206,10 +206,10 @@ func TestMaterializeRestoresOnAnotherNode(t *testing.T) {
 	t.Setenv("REPLICATE_AGE_IDENTITY", identity.String())
 
 	remote := "file://" + t.TempDir()
-	tn := db.Tenant{Type: "org", ID: "acme"}
+	tn := db.Namespace("org/acme")
 
 	node1Dir := t.TempDir()
-	node1, err := Registry(Config[db.DB]{RegistryConfig: localCfg(node1Dir), RemoteURL: remote})
+	node1, err := Namespaces(Config[db.DB]{NamespacesConfig: localCfg(node1Dir), RemoteURL: remote})
 	if err != nil {
 		t.Fatalf("node1: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestMaterializeRestoresOnAnotherNode(t *testing.T) {
 	}
 
 	node2Dir := t.TempDir()
-	node2, err := Registry(Config[db.DB]{RegistryConfig: localCfg(node2Dir), RemoteURL: remote})
+	node2, err := Namespaces(Config[db.DB]{NamespacesConfig: localCfg(node2Dir), RemoteURL: remote})
 	if err != nil {
 		t.Fatalf("node2: %v", err)
 	}
@@ -250,13 +250,13 @@ func TestUnconfiguredEncryptionRefusesTenant(t *testing.T) {
 	t.Setenv("REPLICATE_ALLOW_PLAINTEXT", "")
 	t.Setenv("REPLICATE_AGE_RECIPIENT", "")
 
-	r, err := Registry(Config[db.DB]{RegistryConfig: localCfg(t.TempDir()), RemoteURL: "file://" + t.TempDir()})
+	r, err := Namespaces(Config[db.DB]{NamespacesConfig: localCfg(t.TempDir()), RemoteURL: "file://" + t.TempDir()})
 	if err != nil {
-		t.Fatalf("Registry: %v", err)
+		t.Fatalf("Namespaces: %v", err)
 	}
 	defer r.Close()
 
-	err = r.Do(context.Background(), db.Tenant{Type: "org", ID: "acme"}, func(db.DB) error { return nil })
+	err = r.With(context.Background(), db.Namespace("org/acme"), func(db.DB) error { return nil })
 	if err == nil {
 		t.Fatal("tenant opened with no encryption configured and a remote destination")
 	}
@@ -269,7 +269,7 @@ func TestUnconfiguredEncryptionRefusesTenant(t *testing.T) {
 // would address another tenant's history.
 func TestTenantMustBeAName(t *testing.T) {
 	s := &store{base: "file:///tmp/whatever"}
-	for _, tn := range []db.Tenant{
+	for _, tn := range []db.Namespace{
 		{Type: "org", ID: ".."},
 		{Type: "org", ID: "../other"},
 		{Type: "..", ID: "acme"},
@@ -279,7 +279,7 @@ func TestTenantMustBeAName(t *testing.T) {
 			t.Errorf("urlFor(%q) = %q, want an error", tn, u)
 		}
 	}
-	u, err := s.urlFor(db.Tenant{Type: "org", ID: "acme"})
+	u, err := s.urlFor(db.Namespace("org/acme"))
 	if err != nil {
 		t.Fatalf("urlFor: %v", err)
 	}
@@ -293,7 +293,7 @@ func TestTenantMustBeAName(t *testing.T) {
 // tenant at the bucket root.
 func TestRemoteURLKeepsQueryParameters(t *testing.T) {
 	s := &store{base: "s3://bucket/prefix?endpoint=https%3A%2F%2Fs3.example.com&region=us-central1"}
-	u, err := s.urlFor(db.Tenant{Type: "org", ID: "acme"})
+	u, err := s.urlFor(db.Namespace("org/acme"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +307,7 @@ func TestRemoteURLKeepsQueryParameters(t *testing.T) {
 
 // tenantFile creates a tenant's SQLite file where the registry would put it,
 // with one row in it, and closes it.
-func tenantFile(t *testing.T, dir string, tn db.Tenant, text string) string {
+func tenantFile(t *testing.T, dir string, tn db.Namespace, text string) string {
 	t.Helper()
 	p := filepath.Join(dir, tn.Type, tn.ID+".db")
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
@@ -318,9 +318,9 @@ func tenantFile(t *testing.T, dir string, tn db.Tenant, text string) string {
 }
 
 // writeDirect opens a tenant file outside the registry and writes one row.
-func writeDirect(t *testing.T, path string, tn db.Tenant, id, text string) {
+func writeDirect(t *testing.T, path string, tn db.Namespace, id, text string) {
 	t.Helper()
-	d, err := db.OpenSQLiteTenant(tn, path)
+	d, err := db.OpenNamespace(tn, path)
 	if err != nil {
 		t.Fatalf("open %s: %v", path, err)
 	}

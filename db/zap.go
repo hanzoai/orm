@@ -304,9 +304,6 @@ func (z *ZapDB) Close() error {
 	return nil
 }
 
-func (z *ZapDB) TenantID() string   { return z.tenantID }
-func (z *ZapDB) TenantType() string { return "zap" }
-
 // --- SQL backend ---
 
 func (z *ZapDB) sqlGet(ctx context.Context, key Key, dst interface{}) error {

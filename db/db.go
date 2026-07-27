@@ -153,10 +153,6 @@ type DB interface {
 
 	// Lifecycle
 	Close() error
-
-	// Tenant info
-	TenantID() string
-	TenantType() string
 }
 
 // Datastore is the analytics plane: one shared columnar warehouse holding
