@@ -1,6 +1,6 @@
 module github.com/hanzoai/orm/replicated
 
-go 1.26.4
+go 1.26.5
 
 require (
 	github.com/hanzoai/orm v0.6.16

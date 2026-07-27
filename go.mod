@@ -1,6 +1,6 @@
 module github.com/hanzoai/orm
 
-go 1.26.4
+go 1.26.5
 
 require (
 	github.com/hanzoai/dbx v1.17.2
