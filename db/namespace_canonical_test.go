@@ -35,7 +35,7 @@ func TestNamespaceMustBeginWithALetter(t *testing.T) {
 }
 
 func TestNamespaceHasOneSpelling(t *testing.T) {
-	// Three strings, one file. Keyed raw these open three entries over one
+	// Many strings, one file. Keyed raw each opens its own entry over one
 	// history; canonical collapses them to the name the file is stored under.
 	for _, tc := range []struct{ in, want Namespace }{
 		{"org/acme", "org/acme"},
@@ -44,6 +44,11 @@ func TestNamespaceHasOneSpelling(t *testing.T) {
 		{"org/./acme", "org/acme"},
 		{"org/x/../acme", "org/acme"},
 		{"./org/acme", "org/acme"},
+		// Case is the alias where both spellings are one FILE on a
+		// case-insensitive filesystem, so it is the one that corrupts rather
+		// than merely duplicates.
+		{"Org/Acme", "org/acme"},
+		{"ORG/ACME", "org/acme"},
 		{"user/z", "user/z"},
 		{"org/acme/project/atlas", "org/acme/project/atlas"},
 	} {
@@ -72,7 +77,7 @@ func TestAliasesShareOneDatabase(t *testing.T) {
 	open := func(n Namespace) error {
 		return r.With(ctx, n, func(DB) error { return nil })
 	}
-	for _, n := range []Namespace{"org/acme", "org//acme", "org/acme/", "org/./acme"} {
+	for _, n := range []Namespace{"org/acme", "org//acme", "org/acme/", "org/./acme", "Org/Acme"} {
 		if err := open(n); err != nil {
 			t.Fatalf("%q: %v", n, err)
 		}
