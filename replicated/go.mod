@@ -2,6 +2,13 @@ module github.com/hanzoai/orm/replicated
 
 go 1.26.5
 
+// The two modules move together in one repo, so a build from this checkout uses
+// the tree rather than the last published orm — otherwise a change to a seam
+// here tests green against the old orm and breaks on release. A consumer's build
+// ignores this (Go honours replace only in the main module) and resolves the
+// required version.
+replace github.com/hanzoai/orm => ../
+
 require (
 	github.com/hanzoai/orm v0.6.16
 	github.com/hanzoai/replicate v0.9.6

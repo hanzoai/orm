@@ -1,17 +1,17 @@
-// Package replicated makes orm's per-tenant databases durable.
+// Package replicated makes orm's per-namespace databases durable.
 //
-// [db.Namespaces] resolves a tenant to a handle and bounds how many stay open. It
-// declares three seams and fills in none of them: Materialize on a local miss,
-// OnOpen and OnClose around a handle's life. This package fills them with
-// hanzoai/replicate — while the registry holds a tenant open, that tenant's
+// [db.Namespaces] resolves a namespace to a handle and bounds how many stay
+// open. It declares three seams and fills in none of them: Materialize on a
+// local miss, OnOpen and OnClose around a handle's life. This package fills them
+// with hanzoai/replicate — while a namespace is held open, that database's
 // SQLite file streams its WAL to object storage; when a node is asked for a
-// tenant it does not have on disk, that file is restored before it is opened.
-// The pair is what lets a node evict a tenant and any node re-materialise it.
+// namespace it does not have on disk, that file is restored before it is opened.
+// The pair is what lets a node evict a namespace and any node re-materialise it.
 //
-// One replicator per tenant FILE, never one over the directory. A replica URL is
-// a key prefix whose history belongs to a single database, and per-file lifetime
-// is the whole point: a directory-wide replicator cannot start when one tenant
-// arrives and stop when that one tenant is evicted.
+// One replicator per FILE, never one over the directory. A replica URL is a key
+// prefix whose history belongs to a single database, and per-file lifetime is
+// the whole point: a directory-wide replicator cannot start when one namespace
+// arrives and stop when that one is evicted.
 //
 // # Separate module on purpose
 //
@@ -24,14 +24,14 @@
 //
 // REPLICATE_S3_ENDPOINT and friends, as every other hanzo service spells it (see
 // [replicate.AutoReplicate]). With none of it set, and no explicit RemoteURL,
-// [Namespaces] returns the plain local registry — the same construction path on a
-// laptop and in a cluster, minus durability.
+// [Namespaces] returns the plain local collection — the same construction path
+// on a laptop and in a cluster, minus durability.
 //
 // # The constraint that does not go away
 //
-// One writer per tenant. Two nodes holding the same tenant open stream two
+// One writer per namespace. Two nodes holding the same one open stream two
 // histories to one prefix and the loser's writes are gone. Nothing here enforces
-// that; the tenant key is the shard key, so route a tenant to one node.
+// that; the namespace is the shard key, so route each to one node.
 package replicated
 
 import (
@@ -54,9 +54,9 @@ import (
 type Config[T io.Closer] struct {
 	db.NamespacesConfig[T]
 
-	// RemoteURL is the root the tenant replicas live under: each tenant file
-	// streams to <RemoteURL>/<type>/<id>. Empty means "build it from the
-	// REPLICATE_S3_* environment"; empty with no environment means local only.
+	// RemoteURL is the root the replicas live under: each database streams to
+	// <RemoteURL>/<namespace>. Empty means "build it from the REPLICATE_S3_*
+	// environment"; empty with no environment means local only.
 	//
 	// It is a replica URL rather than an endpoint because that is the value
 	// replicate already speaks (s3://, gs://, abs://, file://…), so moving a
@@ -65,12 +65,12 @@ type Config[T io.Closer] struct {
 	// its backend package.
 	//
 	// It must not be node-scoped. A prefix carrying a hostname makes each node's
-	// replicas invisible to every other node, which defeats the point: a tenant
-	// evicted here has to be restorable there.
+	// replicas invisible to every other node, which defeats the point: a
+	// namespace evicted here has to be restorable there.
 	RemoteURL string
 }
 
-// Namespaces returns a tenant registry whose files are durable in object storage.
+// Namespaces returns a collection whose files are durable in object storage.
 //
 // It is [db.NewNamespaces] with the three durability seams filled in, and it
 // returns the same *db.Namespaces, so callers see one type whether or not
@@ -81,7 +81,7 @@ func Namespaces[T io.Closer](cfg Config[T]) (*db.Namespaces[T], error) {
 		base = replicate.ReplicaURL("")
 	}
 	if base == "" {
-		// Nothing configured. Degrade to the local-only registry rather than
+		// Nothing configured. Degrade to the local-only collection rather than
 		// error: durability is a deployment property, and a dev box that has to
 		// take a different code path to run is a dev box that drifts.
 		return db.NewNamespaces(cfg.NamespacesConfig)
@@ -97,13 +97,13 @@ func Namespaces[T io.Closer](cfg Config[T]) (*db.Namespaces[T], error) {
 	cfg.Materialize = s.materialize
 	// Replication is a property of the FILE, so the handle is dropped here and T
 	// never appears below this line.
-	cfg.OnOpen = func(t db.Namespace, path string, _ T) error { return s.start(t, path) }
-	cfg.OnClose = func(t db.Namespace, _ string, _ T) error { return s.stop(t) }
+	cfg.OnOpen = func(ns db.Namespace, path string, _ T) error { return s.start(ns, path) }
+	cfg.OnClose = func(ns db.Namespace, _ string, _ T) error { return s.stop(ns) }
 	return db.NewNamespaces(cfg.NamespacesConfig)
 }
 
-// store owns the replication half of a tenant handle's life: one live stream per
-// open tenant file, started with the handle and stopped with it.
+// store owns the replication half of a handle's life: one live stream per open
+// file, started with the handle and stopped with it.
 type store struct {
 	base string
 
@@ -111,11 +111,11 @@ type store struct {
 	live map[db.Namespace]*replicate.DB
 }
 
-// materialize restores a tenant's file from its replica before the registry
-// opens it. A tenant nothing has ever replicated leaves no file behind, which is
-// the registry's "new tenant, start empty".
-func (s *store) materialize(ctx context.Context, t db.Namespace, path string) error {
-	u, err := s.urlFor(t)
+// materialize restores a namespace's file from its replica before the database
+// is opened. A namespace nothing has ever replicated leaves no file behind,
+// which is orm's "new namespace, start empty".
+func (s *store) materialize(ctx context.Context, ns db.Namespace, path string) error {
+	u, err := s.urlFor(ns)
 	if err != nil {
 		return err
 	}
@@ -123,8 +123,8 @@ func (s *store) materialize(ctx context.Context, t db.Namespace, path string) er
 	return err
 }
 
-func (s *store) start(t db.Namespace, path string) error {
-	u, err := s.urlFor(t)
+func (s *store) start(ns db.Namespace, path string) error {
+	u, err := s.urlFor(ns)
 	if err != nil {
 		return err
 	}
@@ -135,21 +135,21 @@ func (s *store) start(t db.Namespace, path string) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.live[t]; ok {
-		// The registry opens a tenant once, so a live stream here means a
-		// previous handle's OnClose did not run. Two streams on one file race to
-		// write one LTX history: refuse rather than corrupt the replica.
+	if _, ok := s.live[ns]; ok {
+		// A namespace is opened once, so a live stream here means a previous
+		// handle's OnClose did not run. Two streams on one file race to write
+		// one LTX history: refuse rather than corrupt the replica.
 		_ = rdb.Close(context.Background())
-		return fmt.Errorf("replicated: %s is already streaming", t)
+		return fmt.Errorf("replicated: %s is already streaming", ns)
 	}
-	s.live[t] = rdb
+	s.live[ns] = rdb
 	return nil
 }
 
-func (s *store) stop(t db.Namespace) error {
+func (s *store) stop(ns db.Namespace) error {
 	s.mu.Lock()
-	rdb, ok := s.live[t]
-	delete(s.live, t)
+	rdb, ok := s.live[ns]
+	delete(s.live, ns)
 	s.mu.Unlock()
 	if !ok {
 		return nil
@@ -167,16 +167,16 @@ func (s *store) stop(t db.Namespace) error {
 // base carries query parameters (endpoint, region), so concatenating would
 // append it after "?endpoint=…" and quietly point every namespace at the bucket
 // root.
-func (s *store) urlFor(t db.Namespace) (string, error) {
-	// A namespace is a path OF names, and every element must be a name. The
-	// registry canonicalises before it calls a hook, but this is the boundary
-	// where a namespace becomes a key prefix and replicate path.Cleans what it
-	// is given, so a ".." that got this far would resolve into another
-	// namespace's history.
-	segs := strings.Split(string(t), "/")
+func (s *store) urlFor(ns db.Namespace) (string, error) {
+	// A namespace is a path OF names, and every element must be a name. db
+	// canonicalises before it calls a hook, but this is the boundary where a
+	// namespace becomes a key prefix and replicate path.Cleans what it is
+	// given, so a ".." that got this far would resolve into another namespace's
+	// history.
+	segs := strings.Split(string(ns), "/")
 	for _, seg := range segs {
 		if !segment(seg) {
-			return "", fmt.Errorf("replicated: namespace %q is a path, not a name", t)
+			return "", fmt.Errorf("replicated: namespace %q is a path, not a name", ns)
 		}
 	}
 	u, err := url.Parse(s.base)
