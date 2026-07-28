@@ -302,6 +302,99 @@ func (n *Namespaces[T]) With(ctx context.Context, ns Namespace, fn func(T) error
 	return fn(e.db)
 }
 
+// WithAll runs fn with several namespaces held open at once, acquired in
+// parallel.
+//
+// It exists because entities relate across namespaces even though each one lives
+// in exactly one, and because the files are meant to be small: a request that
+// renders an issue list touches the repository's issues, its labels, and a
+// handful of users, and every one of those is a different database. Serving that
+// by nesting With per namespace builds a pyramid as deep as the number of
+// namespaces involved, and makes the wall clock their SUM -- which is the wrong
+// cost model entirely when each open may be a restore from object storage.
+//
+// So they are acquired concurrently and the wall clock is the slowest one, not
+// the total. There is no lock-ordering hazard to design around: acquire holds no
+// lock while it waits, it takes a reference and waits on that entry alone, so two
+// callers asking for the same namespaces in opposite orders cannot hold each
+// other's next handle. Sorting would buy nothing here and cost the parallelism.
+//
+// Namespaces are canonicalised and de-duplicated first, so asking for the same
+// one twice is one handle rather than a second reference that must also be
+// returned.
+//
+// Held handles cannot be evicted, so fn holds len(ns) of them at once. That may
+// exceed MaxOpen -- the bound governs how many stay open while IDLE, not how many
+// one caller may use -- but a request naming more namespaces than the entire
+// bound describes a query that does not fit on this node, and is refused here
+// rather than left to evict every other tenant to make room for itself.
+//
+// The handles follow the same rule as With: valid for the life of fn, and not
+// beyond it.
+func (n *Namespaces[T]) WithAll(ctx context.Context, nss []Namespace, fn func(map[Namespace]T) error) error {
+	want := make([]Namespace, 0, len(nss))
+	seen := make(map[Namespace]struct{}, len(nss))
+	for _, raw := range nss {
+		c, err := canonical(raw)
+		if err != nil {
+			return err
+		}
+		if _, dup := seen[c]; dup {
+			continue
+		}
+		seen[c] = struct{}{}
+		want = append(want, c)
+	}
+	if len(want) == 0 {
+		return fn(map[Namespace]T{})
+	}
+	if n.cfg.MaxOpen > 0 && len(want) > n.cfg.MaxOpen {
+		return fmt.Errorf("orm/db: %d namespaces at once exceeds MaxOpen %d", len(want), n.cfg.MaxOpen)
+	}
+
+	// Acquire concurrently. Every result is recorded, including the failures,
+	// because a namespace that opened must be released even when a sibling
+	// failed -- dropping it on the error path is the leak this type exists to
+	// prevent, and the error path is where leaks are least likely to be noticed.
+	var (
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		taken = make([]*entry[T], 0, len(want))
+		firstErr error
+	)
+	wg.Add(len(want))
+	for _, ns := range want {
+		go func(ns Namespace) {
+			defer wg.Done()
+			e, err := n.acquire(ctx, ns)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				return
+			}
+			taken = append(taken, e)
+		}(ns)
+	}
+	wg.Wait()
+
+	defer func() {
+		for _, e := range taken {
+			n.release(e)
+		}
+	}()
+	if firstErr != nil {
+		return firstErr
+	}
+	out := make(map[Namespace]T, len(taken))
+	for _, e := range taken {
+		out[e.ns] = e.db
+	}
+	return fn(out)
+}
+
 func (n *Namespaces[T]) acquire(ctx context.Context, ns Namespace) (*entry[T], error) {
 	ns, err := canonical(ns)
 	if err != nil {
