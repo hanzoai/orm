@@ -77,7 +77,7 @@ func TestAliasesShareOneDatabase(t *testing.T) {
 			t.Fatalf("%q: %v", n, err)
 		}
 	}
-	if n := r.Open(); n != 1 {
+	if n := r.Held(); n != 1 {
 		t.Errorf("open handles = %d, want 1 — aliases opened separate entries", n)
 	}
 
