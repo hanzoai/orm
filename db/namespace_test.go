@@ -88,7 +88,7 @@ func TestRegistryEvictsColdestPastBound(t *testing.T) {
 			t.Fatalf("Do %s: %v", id, err)
 		}
 	}
-	if got := r.Open(); got != 2 {
+	if got := r.Held(); got != 2 {
 		t.Errorf("open handles = %d, want 2 (the bound)", got)
 	}
 	// "a" was coldest and should have been closed, so touching it reopens.
@@ -132,13 +132,13 @@ func TestRegistryIdleTTLClosesQuietHandles(t *testing.T) {
 	r, _ := fakeRegistry(t, NamespacesConfig[DB]{MaxOpen: 8, IdleTTL: 30 * time.Millisecond})
 	ctx := context.Background()
 	_ = r.With(ctx, Namespace("org/quiet"), func(DB) error { return nil })
-	if r.Open() != 1 {
-		t.Fatalf("expected the handle open, got %d", r.Open())
+	if r.Held() != 1 {
+		t.Fatalf("expected the handle open, got %d", r.Held())
 	}
 	time.Sleep(60 * time.Millisecond)
 	// Eviction runs on registry activity; any Do sweeps the idle set.
 	_ = r.With(ctx, Namespace("org/other"), func(DB) error { return nil })
-	if got := r.Open(); got != 1 {
+	if got := r.Held(); got != 1 {
 		t.Errorf("open = %d, want 1 — the idle handle should have been closed", got)
 	}
 }
@@ -272,7 +272,7 @@ func TestRegistryHoldsBoundAboveSampleSize(t *testing.T) {
 		if err := r.With(ctx, Namespace("org"+"/"+strconv.Itoa(i)), func(DB) error { return nil }); err != nil {
 			t.Fatalf("Do %d: %v", i, err)
 		}
-		if got := r.Open(); got > maxOpen {
+		if got := r.Held(); got > maxOpen {
 			t.Fatalf("%d handles open after %d tenants, bound is %d", got, i+1, maxOpen)
 		}
 	}

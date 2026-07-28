@@ -28,7 +28,7 @@ func rawRegistry(t *testing.T, maxOpen int) (*Namespaces[DB], func(Namespace) *s
 			// PragmaDSN applies WAL and busy_timeout, the same open contract
 			// NewSQLiteDB uses. A caller-opened tenant file needs it for the
 			// same reason: without it a writer meets SQLITE_BUSY immediately.
-			conn, err := sql.Open("sqlite", sqlite.PragmaDSN(path, configPragmas(DefaultConfig().SQLite)))
+			conn, err := sql.Open("sqlite", sqlite.PragmaDSN(path, configPragmas(SQLiteConfig{})))
 			if err != nil {
 				return nil, err
 			}
@@ -223,7 +223,7 @@ func TestRegistryRawSQLSurvivesEviction(t *testing.T) {
 		t.Fatalf("seed beta: %v", err)
 	}
 
-	if got := r.Open(); got != 1 {
+	if got := r.Held(); got != 1 {
 		t.Errorf("open handles = %d, want 1 (the bound)", got)
 	}
 	if evicted == nil {

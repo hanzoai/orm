@@ -14,35 +14,35 @@ import (
 	"time"
 )
 
-// Namespaces resolves a tenant to its database.
+// Namespaces resolves a namespace to its database.
 //
-// The model is one SQLite file per tenant, S3 as the source of truth, and local
-// disk as a cache. A node holds a bounded number of tenant databases open,
-// materialising a file from remote storage when it is not on disk and closing
-// the coldest handles when the bound is reached. That is what lets any node
-// serve any tenant, and lets a node stay small while the tenant count grows.
+// The model is one SQLite file per namespace, remote storage as the source of
+// truth, and local disk as a cache. A node holds a bounded number of databases
+// open, materialising a file from remote storage when it is not on disk and
+// closing the coldest handles when the bound is reached. That is what lets any
+// node serve any namespace, and lets a node stay small while their number grows.
 //
 // Before this existed the capability was split and neither half was complete:
-// this package declared the tenant contract (TenantID/TenantType) with no
-// lifecycle, while hanzoai/commerce carried the lifecycle in unbounded
-// userDBs/orgDBs maps whose handles were only closed at shutdown — so file
-// descriptors and memory grew with the number of tenants ever touched, and
-// nothing replicated. Open-per-tenant without a bound leaks by construction.
+// this package declared a per-tenant database contract with no lifecycle, while
+// hanzoai/commerce carried the lifecycle in unbounded userDBs/orgDBs maps whose
+// handles were only closed at shutdown — so file descriptors and memory grew
+// with the number of tenants ever touched, and nothing replicated. Open-per-name
+// without a bound leaks by construction, which is why MaxOpen has no default.
 //
-// T is the handle type. The registry calls exactly one method on it — Close —
+// T is the handle type. This type calls exactly one method on it — Close —
 // because releasing a handle is the whole of its job; what a handle *is* stays
 // the caller's business. That separation is load-bearing: pinning T to this
-// package's DB would force every owner of per-tenant files to adopt this
+// package's DB would force every owner of per-namespace files to adopt this
 // package's entity API as well, which is exactly the toll that made commerce
 // write its own lifecycle instead of reusing this one. Use Namespaces[DB] here,
 // Namespaces[yourDB] there, one implementation either way.
 //
 // Layering, one job each:
 //
-//	transport  carries WHICH tenant (request context)
-//	Namespaces   resolves tenant -> handle: open, cache, evict   <- here
-//	Replicate  makes each tenant file durable (WAL -> S3)
-//	caller     asks for a tenant's database and thinks about none of it
+//	transport   carries WHICH namespace (request context)
+//	Namespaces  resolves namespace -> handle: open, cache, evict   <- here
+//	replicate   makes each file durable (WAL -> object storage)
+//	caller      asks for a namespace's database and thinks about none of it
 type Namespaces[T io.Closer] struct {
 	cfg NamespacesConfig[T]
 
@@ -79,7 +79,7 @@ type Namespaces[T io.Closer] struct {
 	// held is len(entries), published so release can ask "are we over the
 	// bound?" without a lock. Loading a line that is only written when the set
 	// changes is free; a lock on every release is a round trip through the one
-	// piece of shared state every tenant contends on.
+	// piece of shared state every caller contends on.
 	held atomic.Int64
 
 	// epoch is the base for entry.lastUsed, which is a monotonic nanosecond
@@ -92,7 +92,7 @@ type Namespaces[T io.Closer] struct {
 	// draining is set by Close, and read by release to decide whether a
 	// reference hitting zero is worth announcing. A flag written once and read
 	// everywhere costs nothing to read — a counter of in-flight work would have
-	// to be WRITTEN on every claim and release, putting every tenant back on one
+	// to be WRITTEN on every claim and release, putting every caller back on one
 	// contended cache line, which is the cost this type is shaped to avoid.
 	draining atomic.Bool
 
@@ -110,11 +110,12 @@ type Namespaces[T io.Closer] struct {
 // what maps to a single file.
 type Namespace string
 
-func (n Namespace) String() string { return string(n) }
+func (ns Namespace) String() string { return string(ns) }
 
-// NamespacesConfig configures how tenant databases are located, opened and bounded.
+// NamespacesConfig configures how namespace databases are located, opened and
+// bounded.
 type NamespacesConfig[T io.Closer] struct {
-	// Dir is the local cache directory holding tenant files. It is a CACHE:
+	// Dir is the local cache directory holding the files. It is a CACHE:
 	// anything here must be reconstructible from remote storage, because
 	// eviction deletes handles and a node may be replaced at any time.
 	Dir string
@@ -136,28 +137,28 @@ type NamespacesConfig[T io.Closer] struct {
 	// type whose job is holding many handles.
 	IdleTTL time.Duration
 
-	// Open opens the database for a tenant at path. Required — there is no
+	// Open opens the database for a namespace at path. Required — there is no
 	// default, because a default could only ever be right for one T, and a
 	// silently-wrong handle type is worse than a missing one. OpenNamespace
 	// is the ready-made opener for Namespaces[DB].
-	Open func(t Namespace, path string) (T, error)
+	Open func(ns Namespace, path string) (T, error)
 
 	// Materialize is called when path does not exist locally, to restore it
 	// from remote storage before Open. Returning nil without creating the file
-	// is valid and means "new tenant, start empty".
+	// is valid and means "new namespace, start empty".
 	//
 	// Nil skips the step entirely — local-only, which is correct for tests and
 	// single-node development but is NOT the production shape.
-	Materialize func(ctx context.Context, t Namespace, path string) error
+	Materialize func(ctx context.Context, ns Namespace, path string) error
 
-	// OnOpen runs after a database is opened, for per-tenant setup that must
+	// OnOpen runs after a database is opened, for setup that must
 	// track the handle's lifetime — starting WAL replication for this file is
 	// the reason it exists. Its error fails the open.
-	OnOpen func(t Namespace, path string, db T) error
+	OnOpen func(ns Namespace, path string, db T) error
 
 	// OnClose runs before a database is closed, to undo OnOpen. Its error is
 	// returned by Close but does not prevent the handle being released.
-	OnClose func(t Namespace, path string, db T) error
+	OnClose func(ns Namespace, path string, db T) error
 
 	// OnEvictError reports a handle that failed to shut down during eviction.
 	//
@@ -165,25 +166,25 @@ type NamespacesConfig[T io.Closer] struct {
 	// return to, so without this the error is discarded. That matters more here
 	// than anywhere else in the type: eviction IS the durability checkpoint. When
 	// OnClose is a final WAL flush to object storage, a failure means that
-	// tenant's writes are gone — and until now it happened with no error, no log
+	// namespace's writes are gone — and until now it happened with no error, no log
 	// and no signal of any kind, on the one path the whole "disk is a cache, S3
 	// is the truth" model depends on.
 	//
 	// Nil means those failures stay silent. That is a deliberate choice a caller
 	// has to make, not a default they back into: set it to log, alert, or refuse
 	// to evict further.
-	OnEvictError func(t Namespace, path string, err error)
+	OnEvictError func(ns Namespace, path string, err error)
 
 	// PathFor maps a namespace to its file path under Dir. It returns an error
 	// when the result would escape Dir. Defaults to
 	// <Dir>/<type>/<id>.db.
-	PathFor func(dir string, n Namespace) (string, error)
+	PathFor func(dir string, ns Namespace) (string, error)
 }
 
 type entry[T io.Closer] struct {
-	tenant Namespace
-	path   string
-	db     T
+	ns   Namespace
+	path string
+	db   T
 
 	// refs counts in-flight users; never evict above zero. Claimed under the
 	// registry's read lock so eviction cannot race a claim, and dropped with no
@@ -197,7 +198,7 @@ type entry[T io.Closer] struct {
 	// writer and needs no lock.
 	lastUsed atomic.Int64
 
-	// ready is closed once open finishes. Waiters on a tenant being opened
+	// ready is closed once open finishes. Waiters on a namespace being opened
 	// block here rather than opening it a second time.
 	ready chan struct{}
 	// opened records that db holds a live handle. A bool rather than a nil
@@ -236,9 +237,9 @@ func NewNamespaces[T io.Closer](cfg NamespacesConfig[T]) (*Namespaces[T], error)
 // now is nanoseconds since the registry was built. Monotonic — time.Since
 // reads the monotonic clock — so a wall-clock jump cannot make a handle look
 // idle for an hour, or freshly used when it is not.
-func (r *Namespaces[T]) now() int64 { return int64(time.Since(r.epoch)) }
+func (n *Namespaces[T]) now() int64 { return int64(time.Since(n.epoch)) }
 
-// canonical returns the one spelling of n this package will use as a map key.
+// canonical returns the one spelling of a namespace this package uses as a map key.
 //
 // A namespace must begin with a letter. That single rule rejects the absolute
 // form, the dot-relative form and the empty name together, so "/org/acme" is
@@ -250,10 +251,10 @@ func (r *Namespaces[T]) now() int64 { return int64(time.Since(r.epoch)) }
 // one file but are three distinct strings. Keyed raw, they would open that file
 // under three entries and replicate one history from three streams. Keyed here,
 // they are one namespace.
-func canonical(n Namespace) (Namespace, error) {
-	c := Namespace(path.Clean(string(n)))
+func canonical(ns Namespace) (Namespace, error) {
+	c := Namespace(path.Clean(string(ns)))
 	if c == "" || !isLetter(rune(c[0])) {
-		return "", fmt.Errorf("db: namespace %q must begin with a letter", n)
+		return "", fmt.Errorf("db: namespace %q must begin with a letter", ns)
 	}
 	return c, nil
 }
@@ -262,66 +263,66 @@ func isLetter(r rune) bool {
 	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z'
 }
 
-// pathFor returns n's file under dir. Containment is structural rather than a
+// pathFor returns the namespace's file under dir. Containment is structural rather than a
 // rule about names: the cleaned join must still sit under dir, so no namespace
 // can address a file outside the cache however it is spelled. Checking the
 // result covers separators, dot-segments and encodings alike, which a denylist
 // over the input does not.
-func pathFor(dir string, n Namespace) (string, error) {
-	p := filepath.Clean(filepath.Join(dir, filepath.FromSlash(string(n))+".db"))
+func pathFor(dir string, ns Namespace) (string, error) {
+	p := filepath.Clean(filepath.Join(dir, filepath.FromSlash(string(ns))+".db"))
 	root := filepath.Clean(dir) + string(filepath.Separator)
 	if !strings.HasPrefix(p, root) {
-		return "", fmt.Errorf("db: namespace %q escapes %s", n, dir)
+		return "", fmt.Errorf("db: namespace %q escapes %s", ns, dir)
 	}
 	return p, nil
 }
 
-// OpenNamespace opens a tenant's SQLite store with this package's defaults.
+// OpenNamespace opens a namespace's SQLite store with this package's defaults.
 // It is the NamespacesConfig[DB].Open for the common case.
-func OpenNamespace(n Namespace, path string) (DB, error) {
+func OpenNamespace(ns Namespace, path string) (DB, error) {
 	return NewSQLiteDB(&SQLiteDBConfig{
 		Path:      path,
-		Namespace: string(n),
+		Namespace: string(ns),
 	})
 }
 
-// Do runs fn with the tenant's database held open.
+// With runs fn while the namespace's database is held open.
 //
 // This is the whole API on purpose. Handing callers a raw handle means handing
 // them the job of returning it, and a forgotten return pins a database open
 // forever — reintroducing exactly the unbounded growth this type prevents.
 // Within fn the handle cannot be evicted; after fn returns it becomes evictable.
 // Do not retain the handle beyond fn.
-func (r *Namespaces[T]) With(ctx context.Context, t Namespace, fn func(T) error) error {
-	e, err := r.acquire(ctx, t)
+func (n *Namespaces[T]) With(ctx context.Context, ns Namespace, fn func(T) error) error {
+	e, err := n.acquire(ctx, ns)
 	if err != nil {
 		return err
 	}
-	defer r.release(e)
+	defer n.release(e)
 	return fn(e.db)
 }
 
-func (r *Namespaces[T]) acquire(ctx context.Context, t Namespace) (*entry[T], error) {
-	t, err := canonical(t)
+func (n *Namespaces[T]) acquire(ctx context.Context, ns Namespace) (*entry[T], error) {
+	ns, err := canonical(ns)
 	if err != nil {
 		return nil, err
 	}
-	e, fresh, err := r.claim(t)
+	e, fresh, err := n.claim(ns)
 	if err != nil {
 		return nil, err
 	}
 	if fresh {
 		// The open runs on a context detached from this caller. One caller
-		// triggers it but everyone asking for this tenant waits on the result,
+		// triggers it but everyone asking for this namespace waits on the result,
 		// so binding it to whoever arrived first means a client disconnect
 		// fails unrelated requests with a cancellation that is nowhere in
-		// them. WithoutCancel keeps the values — tracing, tenant, deadlines a
+		// them. WithoutCancel keeps the values — tracing, identity, deadlines a
 		// Materialize may read — and drops only the fate.
 		//
 		// In a goroutine so that the caller who triggered the open waits the
 		// same way as everyone else, rather than being the one caller who
 		// cannot walk away from it.
-		go r.fill(context.WithoutCancel(ctx), e)
+		go n.fill(context.WithoutCancel(ctx), e)
 	}
 	// May still be opening; wait rather than open twice — but wait ON THIS
 	// CALLER'S TERMS. Materialize is a restore from object storage, so this is
@@ -331,92 +332,92 @@ func (r *Namespaces[T]) acquire(ctx context.Context, t Namespace) (*entry[T], er
 	select {
 	case <-e.ready:
 	case <-ctx.Done():
-		r.release(e)
+		n.release(e)
 		return nil, ctx.Err()
 	}
 	if e.err != nil {
-		r.release(e)
+		n.release(e)
 		return nil, e.err
 	}
 	if fresh {
-		r.evict() // one more handle may have put us over the bound
+		n.evict() // one more handle may have put us over the bound
 	}
 	return e, nil
 }
 
 // claim finds or creates the entry for t and takes a reference on it. fresh
 // reports that this caller created it and therefore owes it a fill.
-func (r *Namespaces[T]) claim(t Namespace) (*entry[T], bool, error) {
+func (n *Namespaces[T]) claim(ns Namespace) (*entry[T], bool, error) {
 	// The common case, and the only one that has to be cheap: the handle is
 	// open, so claiming it is a map read and an increment under a shared lock.
-	r.mu.RLock()
-	if r.closed {
-		r.mu.RUnlock()
+	n.mu.RLock()
+	if n.closed {
+		n.mu.RUnlock()
 		return nil, false, ErrClosed
 	}
-	e, ok := r.entries[t]
+	e, ok := n.entries[ns]
 	if ok {
 		e.refs.Add(1)
 	}
-	r.mu.RUnlock()
+	n.mu.RUnlock()
 	if ok {
 		return e, false, nil
 	}
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.closed {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.closed {
 		return nil, false, ErrClosed
 	}
-	if e, ok := r.entries[t]; ok { // opened while we swapped read lock for write
+	if e, ok := n.entries[ns]; ok { // opened while we swapped read lock for write
 		e.refs.Add(1)
 		return e, false, nil
 	}
-	path, err := r.cfg.PathFor(r.cfg.Dir, t)
+	path, err := n.cfg.PathFor(n.cfg.Dir, ns)
 	if err != nil {
 		return nil, false, err
 	}
-	e = &entry[T]{tenant: t, path: path, ready: make(chan struct{})}
+	e = &entry[T]{ns: ns, path: path, ready: make(chan struct{})}
 	e.refs.Store(1)
-	r.attach(e)
+	n.attach(e)
 	return e, true, nil
 }
 
 // fill opens the handle behind a fresh entry and publishes the outcome to
 // whoever is waiting on it.
-func (r *Namespaces[T]) fill(ctx context.Context, e *entry[T]) {
-	e.err = r.open(ctx, e)
+func (n *Namespaces[T]) fill(ctx context.Context, e *entry[T]) {
+	e.err = n.open(ctx, e)
 	close(e.ready)
 	if e.err == nil {
 		return
 	}
 	// Drop the failed entry so the next caller retries rather than inheriting
 	// a permanent error.
-	r.mu.Lock()
-	if r.entries[e.tenant] == e {
-		r.detach(e)
+	n.mu.Lock()
+	if n.entries[e.ns] == e {
+		n.detach(e)
 	}
-	r.mu.Unlock()
+	n.mu.Unlock()
 }
 
-func (r *Namespaces[T]) open(ctx context.Context, e *entry[T]) error {
+func (n *Namespaces[T]) open(ctx context.Context, e *entry[T]) error {
 	if err := os.MkdirAll(filepath.Dir(e.path), 0o700); err != nil {
-		return fmt.Errorf("db: tenant dir for %s: %w", e.tenant, err)
+		return fmt.Errorf("db: namespace dir for %s: %w", e.ns, err)
 	}
-	if _, err := os.Stat(e.path); errors.Is(err, os.ErrNotExist) && r.cfg.Materialize != nil {
+	if _, err := os.Stat(e.path); errors.Is(err, os.ErrNotExist) && n.cfg.Materialize != nil {
 		// Local miss. Disk is a cache; the file may exist remotely.
-		if err := r.cfg.Materialize(ctx, e.tenant, e.path); err != nil {
-			return fmt.Errorf("db: materialize %s: %w", e.tenant, err)
+		if err := n.cfg.Materialize(ctx, e.ns, e.path); err != nil {
+			return fmt.Errorf("db: materialize %s: %w", e.ns, err)
 		}
 	}
-	db, err := r.cfg.Open(e.tenant, e.path)
+	db, err := n.cfg.Open(e.ns, e.path)
 	if err != nil {
-		return fmt.Errorf("db: open %s: %w", e.tenant, err)
+		return fmt.Errorf("db: open %s: %w", e.ns, err)
 	}
-	if r.cfg.OnOpen != nil {
-		if err := r.cfg.OnOpen(e.tenant, e.path, db); err != nil {
+	if n.cfg.OnOpen != nil {
+		if err := n.cfg.OnOpen(e.ns, e.path, db); err != nil {
 			_ = db.Close()
-			return fmt.Errorf("db: onopen %s: %w", e.tenant, err)
+			return fmt.Errorf("db: onopen %s: %w", e.ns, err)
 		}
 	}
 	e.db = db
@@ -424,18 +425,18 @@ func (r *Namespaces[T]) open(ctx context.Context, e *entry[T]) error {
 	return nil
 }
 
-func (r *Namespaces[T]) release(e *entry[T]) {
-	now := r.now()
+func (n *Namespaces[T]) release(e *entry[T]) {
+	now := n.now()
 	// Recency before the reference drops: an evictor that sees refs hit zero
 	// must already be able to see the timestamp that goes with it, or it would
 	// judge a handle that has just finished by how long ago it STARTED.
 	e.lastUsed.Store(now)
-	if e.refs.Add(-1) == 0 && r.draining.Load() {
+	if e.refs.Add(-1) == 0 && n.draining.Load() {
 		// Close is waiting for exactly this. Non-blocking: if a signal is
 		// already pending, Close has not consumed it yet and will recheck this
 		// entry when it does.
 		select {
-		case r.drain <- struct{}{}:
+		case n.drain <- struct{}{}:
 		default:
 		}
 	}
@@ -443,55 +444,55 @@ func (r *Namespaces[T]) release(e *entry[T]) {
 	// No lock in the common case. There is only ever something to close when
 	// the bound is exceeded or the sweep comes due, and both questions are
 	// answered from an atomic.
-	if r.held.Load() > int64(r.cfg.MaxOpen) || r.sweepDue(now) {
-		r.evict()
+	if n.held.Load() > int64(n.cfg.MaxOpen) || n.sweepDue(now) {
+		n.evict()
 	}
 }
 
 // sweepDue paces the idle sweep — see NamespacesConfig.IdleTTL for why it is
 // paced at all.
-func (r *Namespaces[T]) sweepDue(now int64) bool {
-	if r.cfg.IdleTTL <= 0 {
+func (n *Namespaces[T]) sweepDue(now int64) bool {
+	if n.cfg.IdleTTL <= 0 {
 		return false
 	}
-	return now-r.swept.Load() >= int64(r.cfg.IdleTTL)/2
+	return now-n.swept.Load() >= int64(n.cfg.IdleTTL)/2
 }
 
 // evict closes handles that are over the bound or idle past the TTL. It never
 // touches an entry with in-flight users, so a slow request is never yanked out
 // from under its caller — the bound is a target, not a guarantee, and being
 // briefly over it is preferable to closing a database mid-query.
-func (r *Namespaces[T]) evict() {
+func (n *Namespaces[T]) evict() {
 	var doomed []*entry[T]
 
-	r.mu.Lock()
-	now := r.now()
-	if r.sweepDue(now) { // re-checked under the lock, so only one goroutine sweeps
-		r.swept.Store(now)
-		cutoff := now - int64(r.cfg.IdleTTL)
-		for _, e := range r.entries { // deleting during a range is defined
+	n.mu.Lock()
+	now := n.now()
+	if n.sweepDue(now) { // re-checked under the lock, so only one goroutine sweeps
+		n.swept.Store(now)
+		cutoff := now - int64(n.cfg.IdleTTL)
+		for _, e := range n.entries { // deleting during a range is defined
 			if e.refs.Load() == 0 && e.lastUsed.Load() <= cutoff {
-				r.detach(e)
+				n.detach(e)
 				doomed = append(doomed, e)
 			}
 		}
 	}
-	for len(r.entries) > r.cfg.MaxOpen {
-		e := r.coldestIdle()
+	for len(n.entries) > n.cfg.MaxOpen {
+		e := n.coldestIdle()
 		if e == nil {
 			break // everything open is in use; over the bound until they finish
 		}
-		r.detach(e)
+		n.detach(e)
 		doomed = append(doomed, e)
 	}
-	r.mu.Unlock()
+	n.mu.Unlock()
 
 	for _, e := range doomed {
 		// Not discarded: a failed shutdown here is a failed final flush, which
 		// is lost writes. Close() returns its error; eviction reports through
 		// the hook because it has no caller to return to.
-		if err := r.shut(e); err != nil && r.cfg.OnEvictError != nil {
-			r.cfg.OnEvictError(e.tenant, e.path, err)
+		if err := n.shut(e); err != nil && n.cfg.OnEvictError != nil {
+			n.cfg.OnEvictError(e.ns, e.path, err)
 		}
 	}
 }
@@ -515,7 +516,7 @@ const evictSamples = 16
 // victim is sampled. And a sample of nothing but busy handles reads as "nothing
 // to evict": the registry stays over the bound and tries again on the next
 // release, with a fresh sample, because Go randomises where a map range starts.
-func (r *Namespaces[T]) coldestIdle() *entry[T] {
+func (n *Namespaces[T]) coldestIdle() *entry[T] {
 	var cold *entry[T]
 	var coldest int64
 	// Scan everything when a miss is expensive, sample when it is cheap.
@@ -532,11 +533,11 @@ func (r *Namespaces[T]) coldestIdle() *entry[T] {
 	// registry already has, rather than from a knob a caller has to know to
 	// turn.
 	limit := evictSamples
-	if r.cfg.Materialize != nil {
-		limit = len(r.entries)
+	if n.cfg.Materialize != nil {
+		limit = len(n.entries)
 	}
 	seen := 0
-	for _, e := range r.entries {
+	for _, e := range n.entries {
 		if seen++; seen > limit {
 			break
 		}
@@ -552,24 +553,24 @@ func (r *Namespaces[T]) coldestIdle() *entry[T] {
 
 // attach and detach are the only writers of entries, and they republish the
 // open count from it so the two cannot drift. Caller holds mu for writing.
-func (r *Namespaces[T]) attach(e *entry[T]) {
-	r.entries[e.tenant] = e
-	r.held.Store(int64(len(r.entries)))
+func (n *Namespaces[T]) attach(e *entry[T]) {
+	n.entries[e.ns] = e
+	n.held.Store(int64(len(n.entries)))
 }
 
-func (r *Namespaces[T]) detach(e *entry[T]) {
-	delete(r.entries, e.tenant)
-	r.held.Store(int64(len(r.entries)))
+func (n *Namespaces[T]) detach(e *entry[T]) {
+	delete(n.entries, e.ns)
+	n.held.Store(int64(len(n.entries)))
 }
 
-func (r *Namespaces[T]) shut(e *entry[T]) error {
+func (n *Namespaces[T]) shut(e *entry[T]) error {
 	<-e.ready
 	if !e.opened {
 		return nil
 	}
 	var err error
-	if r.cfg.OnClose != nil {
-		err = r.cfg.OnClose(e.tenant, e.path, e.db)
+	if n.cfg.OnClose != nil {
+		err = n.cfg.OnClose(e.ns, e.path, e.db)
 	}
 	if cerr := e.db.Close(); cerr != nil && err == nil {
 		err = cerr
@@ -577,8 +578,10 @@ func (r *Namespaces[T]) shut(e *entry[T]) error {
 	return err
 }
 
-// Open reports how many tenant databases are currently held open.
-func (r *Namespaces[T]) Open() int { return int(r.held.Load()) }
+// Held reports how many databases are currently held open. Named for the state
+// it reports, not the verb that produced it: Open on this type is the opener in
+// NamespacesConfig, and one word cannot be both a count and an action.
+func (n *Namespaces[T]) Held() int { return int(n.held.Load()) }
 
 // Close shuts every open database. Further calls to With fail with
 // ErrClosed.
@@ -595,31 +598,31 @@ func (r *Namespaces[T]) Open() int { return int(r.held.Load()) }
 // this drains unless a caller's fn never returns — and a deadline here would be
 // this type inventing a shutdown policy it cannot know. A caller that wants a
 // bounded drain owns that decision and can impose it from outside.
-func (r *Namespaces[T]) Close() error {
-	r.mu.Lock()
-	if r.closed {
-		r.mu.Unlock()
+func (n *Namespaces[T]) Close() error {
+	n.mu.Lock()
+	if n.closed {
+		n.mu.Unlock()
 		return nil
 	}
 	// Ordered: no new claims, then announce that drops are worth reporting,
 	// then take the entries. A claim that slipped in before closed was set is
 	// already counted in refs, so the drain below covers it.
-	r.closed = true
-	r.draining.Store(true)
-	all := make([]*entry[T], 0, len(r.entries))
-	for _, e := range r.entries {
+	n.closed = true
+	n.draining.Store(true)
+	all := make([]*entry[T], 0, len(n.entries))
+	for _, e := range n.entries {
 		all = append(all, e)
 	}
-	r.entries = make(map[Namespace]*entry[T])
-	r.held.Store(0)
-	r.mu.Unlock()
+	n.entries = make(map[Namespace]*entry[T])
+	n.held.Store(0)
+	n.mu.Unlock()
 
 	var firstErr error
 	for _, e := range all {
 		for e.refs.Load() > 0 {
-			<-r.drain // woken by any release; the loop rechecks this entry
+			<-n.drain // woken by any release; the loop rechecks this entry
 		}
-		if err := r.shut(e); err != nil && firstErr == nil {
+		if err := n.shut(e); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
