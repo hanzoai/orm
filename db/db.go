@@ -43,29 +43,6 @@ var (
 	ErrKindMismatch = errors.New("db: id held by a different kind")
 )
 
-// Layer represents which database layer to use.
-type Layer int
-
-const (
-	LayerUser      Layer = iota // User-specific SQLite database
-	LayerOrg                    // Organization-level SQLite database
-	LayerDatastore              // Hanzo Datastore for analytics
-	LayerAll                    // Query all layers
-)
-
-// Config holds database configuration options. The analytics plane is
-// configured on its own, by orm/datastore.Config — it addresses a different
-// store over a different protocol, so it does not share this one.
-type Config struct {
-	DataDir            string
-	UserDataDir        string
-	OrgDataDir         string
-	EnableVectorSearch bool
-	VectorDimensions   int
-	SQLite             SQLiteConfig
-	IsDev              bool
-}
-
 // SQLiteConfig holds SQLite-specific configuration.
 type SQLiteConfig struct {
 	MaxOpenConns int
@@ -75,25 +52,6 @@ type SQLiteConfig struct {
 	Synchronous  string
 	CacheSize    int
 	QueryTimeout time.Duration
-}
-
-// DefaultConfig returns a default configuration.
-func DefaultConfig() *Config {
-	return &Config{
-		DataDir:            "./data",
-		EnableVectorSearch: true,
-		VectorDimensions:   1536,
-		SQLite: SQLiteConfig{
-			MaxOpenConns: 120,
-			MaxIdleConns: 15,
-			BusyTimeout:  10000,
-			JournalMode:  "WAL",
-			Synchronous:  "NORMAL",
-			CacheSize:    -16000,
-			QueryTimeout: 30 * time.Second,
-		},
-		IsDev: false,
-	}
 }
 
 // DB is the main database interface for entity storage.
