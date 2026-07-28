@@ -152,8 +152,8 @@ func TestEvictionStopsStreaming(t *testing.T) {
 	a := db.Namespace("org/evicted")
 	put(t, r, a, "n1", "before-evict")
 	put(t, r, db.Namespace("org/other"), "n1", "b") // MaxOpen 1: evicts a
-	if r.Open() != 1 {
-		t.Fatalf("open handles = %d, want 1", r.Open())
+	if r.Held() != 1 {
+		t.Fatalf("open handles = %d, want 1", r.Held())
 	}
 
 	// Behind the registry's back, so no new stream starts.
