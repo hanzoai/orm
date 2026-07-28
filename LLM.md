@@ -29,16 +29,15 @@ orm/
 ├── cache_kv.go         Redis/Valkey cache backend (kv-go)
 ├── cache_noop.go       No-op cache
 ├── db/                 Concrete database drivers
-│   ├── db.go           DB/Key/Query/Iterator/Transaction/Cursor interfaces + Config
+│   ├── db.go           DB/Key/Query/Iterator/Transaction/Cursor/Datastore interfaces
 │   ├── sqlite.go       SQLite driver (WAL, JSON storage, json_extract filters, sqlite-vec)
 │   ├── query.go        ParseFilterString, NormalizeOp, ToJSONFieldName, GenerateID
 │   ├── model.go        db.Model base type (non-generic, with hooks and CRUD lifecycle)
 │   ├── zap.go          ZAP binary protocol driver (native: SQL/DocumentDB/KV/Datastore)
-│   ├── manager.go      Multi-tenant Manager (RegisterUserDB/RegisterOrgDB)
-│   ├── registry.go     Registry — tenant → DB: open on demand, bound, evict
+│   ├── namespace.go    Namespaces — namespace → DB: open on demand, bound, evict
 │   └── time.go         Testable timeNow var
-├── replicated/         SEPARATE MODULE — durable tenant registry (see below)
-│   └── replicated.go   Registry[T]: binds Materialize/OnOpen/OnClose to hanzoai/replicate
+├── replicated/         SEPARATE MODULE — durable namespace databases (see below)
+│   └── replicated.go   Namespaces[T]: binds Materialize/OnOpen/OnClose to hanzoai/replicate
 ├── datastore/          Analytics plane — Hanzo Datastore (columnar warehouse)
 │   └── datastore.go    Config, Env, Open, Conn.{Ready,Wait,Exec,Query,Close}
 ├── val/                Validation
@@ -58,9 +57,9 @@ Two stores, two protocols, one repo. Do not braid them.
 | | relational plane (`db`) | analytics plane (`datastore`) |
 |---|---|---|
 | holds | entities | measurements |
-| a tenant is | a whole database file | a column, and the leading sort key |
-| isolation | structural — separate files via `db.Registry` | a bound predicate on a shared table |
-| cross-tenant read | impossible | routine, and the point (fleet aggregates) |
+| a namespace is | a whole database file | a column, and the leading sort key |
+| isolation | structural — separate files via `db.Namespaces` | a bound predicate on a shared table |
+| cross-namespace read | impossible | routine, and the point (fleet aggregates) |
 | SQL | generated from typed queries | written by hand (aggregates, windows, engine DDL) |
 | transport | SQLite file / ZAP | warehouse native protocol (`hanzo-ds/go`) |
 
@@ -75,12 +74,12 @@ the plane; `orm/datastore` 252, paid only by callers that want analytics.
 **Raw SQL, and where it lives.** On the analytics plane raw SQL *is* the API —
 `Conn.Exec`/`Conn.Query`. On the relational plane there is no raw escape hatch
 on `db.DB`, on purpose: that interface is implemented by ZAP and document
-backends where SQL is meaningless. A caller that needs raw SQL on a tenant's
+backends where SQL is meaningless. A caller that needs raw SQL on a namespace's
 database opens the `*sql.DB` itself and hands it to `AdaptSQLDB`, which layers
 records over a connection the caller keeps — one connection serving both the
-typed and raw paths, with the `Registry` still deciding when the file is open
-(wire it through `RegistryConfig.Open`, close it in `OnClose`). Proven by
-`db/registry_raw_test.go`.
+typed and raw paths, with `Namespaces` still deciding when the file is open
+(wire it through `NamespacesConfig.Open`, close it in `OnClose`). Proven by
+`db/namespace_raw_test.go`.
 
 ### Two Interface Layers
 - **Root orm.DB/Key/Query** — minimal interfaces for Model[T] (simpler Query with ById/KeyExists)
@@ -146,11 +145,17 @@ typed and raw paths, with the `Registry` still deciding when the file is open
 - SerializeFields: marshals Foo → sets Foo_ (string) before Put
 - DeserializeFields: unmarshals Foo_ → sets Foo after Get
 
-### Namespace / Multi-Tenant
-- `Model[T]` has `namespace` field with `SetNamespace(ns)`/`Namespace()` methods
-- Namespace flows to cache keys via `EntityCacheKey(namespace, kind, id)`
-- SQLite driver sets namespace from `TenantID` on allocated keys
-- Commerce multi-tenant: each user/org DB is a separate SQLite file
+### Namespace — one word, two layers that agree
+- A namespace names one database (`"org/acme"`, `"acme/site"`). It is the key
+  `db.Namespaces` resolves to a file, and it is what an entity carries to say
+  which database it came from — the same value at both layers, not two ideas
+  sharing a word.
+- `Model[T]` has `namespace` with `SetNamespace(ns)`/`Namespace()`; it flows to
+  cache keys via `EntityCacheKey(namespace, kind, id)`, so two databases cannot
+  collide on one cache entry.
+- `SQLiteDBConfig.Namespace` stamps it on every key the driver allocates.
+  `db.OpenNamespace` sets it from the namespace whose file it is opening; a
+  single-database deployment leaves it empty.
 
 ### Context Propagation
 - All CRUD methods have context variants: `CreateCtx(ctx)`, `UpdateCtx(ctx)`, `DeleteCtx(ctx)`, `PutCtx(ctx)`
@@ -268,85 +273,108 @@ hanzo/datastore :9655  ← OLAP (columnar analytics)
 hanzo/base     :9652  ← App framework (collections, auth, realtime)
 ```
 
-## Tenant database lifecycle lives HERE — one way, one place
+## Namespace database lifecycle lives HERE — one way, one place
 
-Decided 2026-07-26. The capability is "a tenant's database": open it on demand,
-keep a bounded number hot, evict cold ones, and make it durable in S3 so any node
-can serve any tenant. Today that capability is split in half and neither half is
-complete.
+Decided 2026-07-26. The capability is "a namespace's database": open it on
+demand, keep a bounded number hot, evict cold ones, and make it durable in object
+storage so any node can serve any namespace. `db.Namespaces` is that capability;
+`orm/replicated` makes it durable.
 
-**orm has the contract, not the lifecycle.** `db/db.go` already declares
-user-level and org-level SQLite and carries `TenantID()` / `TenantType()`. There
-is no registry keyed by tenant, no eviction, and no replication.
+**A namespace is a name, not a pair.** `Namespace` is one opaque string —
+`"org/acme"`, or `"acme/site"` for a project under it. The earlier shape was a
+`(type, id)` struct, which forced this package to have an opinion about how many
+levels of tenancy exist and what they are called. It does not have one: it joins
+the name to a directory and uses it as a map key. How many levels a namespace has
+and which of them exist is the business of whatever mints them, so adding a level
+is a caller change and not a change here.
 
-**commerce has the lifecycle, and it is private and unbounded.**
-`hanzoai/commerce` `db.Manager` holds `userDBs map[string]*SQLiteDB` and
-`orgDBs map[string]*SQLiteDB`, opened on demand — but the maps have no bound and
-handles are only closed by `Manager.Close()`, so file descriptors and memory grow
-with tenant count. It also does NOT import `hanzoai/replicate`, so those tenant
-DBs are local-only.
-
-So per-tenant SQLite exists, and S3-backed SQLite exists (`hanzoai/replicate`:
-WAL shipping, one import, no sidecars, `REPLICATE_S3_ENDPOINT`), and nothing
-does both.
+**The bound is the point.** `MaxOpen` has no default — zero is rejected rather
+than allowed to be the accidental unbounded shape. That shape is the live bug in
+`hanzoai/commerce`'s private `db.Manager`: `userDBs`/`orgDBs` maps opened on
+demand, no bound, handles closed only by `Manager.Close()`, so descriptors and
+memory grow with tenant count, and no `hanzoai/replicate` import, so those files
+are local-only. orm shipped the same duplicate (`db.Manager`, `db.Config`,
+`db.Layer`) until this cut deleted it; keeping the problem next to the solution
+is two ways to do one thing.
 
 ### Why orm and not zip
 
-`zip` is `zap-proto/zip`, an HTTP framework. A tenant's database is not an HTTP
-concern; putting the registry there would braid request routing into storage
+`zip` is `zap-proto/zip`, an HTTP framework. A namespace's database is not an
+HTTP concern; putting this there would braid request routing into storage
 lifecycle and make every non-HTTP caller (jobs, migrations, CLI) reach through a
-web framework to open a file. zip's only job here is carrying tenant identity on
-the request context. orm is the data-access layer and already models tenants, so
-the lifecycle belongs beside the contract it implements.
+web framework to open a file. zip's only job here is carrying which namespace a
+request is for. orm is the data-access layer, so the lifecycle belongs beside the
+contract it implements.
 
-Layering, each doing one thing:
+Layering, one job each:
 
-    zip        -> carries WHICH tenant (request context)
-    orm        -> resolves tenant -> *DB: open, cache, evict          <- the gap
-    replicate  -> makes each tenant file durable (WAL -> S3)
-    app        -> asks orm for a tenant's DB and does not think about any of it
+    transport   carries WHICH namespace (request context)
+    Namespaces  resolves namespace -> handle: open, cache, evict
+    replicate   makes each file durable (WAL -> object storage)
+    caller      asks for a namespace's database and thinks about none of it
 
-### What to build in orm
+### The shape
 
-A registry that owns the whole lifecycle of a tenant handle:
+    n, err := db.NewNamespaces(db.NamespacesConfig[db.DB]{
+        Dir: dir, MaxOpen: 64, IdleTTL: 5 * time.Minute, Open: db.OpenNamespace,
+    })
+    err = n.With(ctx, "org/acme", func(h db.DB) error { … })
 
-- **Resolve** `(TenantType, TenantID) -> *DB`, opened on first use.
-- **Materialise on miss.** If the file is not on local disk, restore it from S3
-  before opening. This is the step that makes a node stateless: local disk is a
-  cache, S3 is the source of truth.
-- **Bound and evict.** LRU or idle-TTL with a configured max open. Closing a cold
-  handle must be safe — the file stays, and the next request re-opens or
-  re-fetches it. Without this the "open per project/org" model leaks by design.
-- **Replicate.** Compose `hanzoai/replicate` per handle so every tenant file
-  ships its WAL to S3 continuously, rather than one replicator over one big DB.
-  **Done — `orm/replicated` (v0.1.0).**
-- **KV in front** for hot reads, so eviction churn does not turn into S3 traffic.
+- **`With` is the whole API.** Handing back a raw handle hands back the job of
+  returning it, and a forgotten return pins a database open forever —
+  reintroducing exactly the unbounded growth the type prevents. Inside `fn` the
+  handle cannot be evicted; after it returns the handle becomes evictable.
+- **Parameterised on `T`.** `Close` is the only method called on a handle, so
+  pinning `T` to `db.DB` would make every owner of per-namespace files adopt this
+  package's entity API to get a bound and an eviction policy.
+- **Bound and evict.** LRU on `MaxOpen`, plus an optional `IdleTTL` swept at
+  `IdleTTL/2` on activity rather than per request — finding idle handles means
+  looking at every open one, which is backwards for the type whose job is holding
+  many of them. Eviction is safe: the file stays and the next request re-opens or
+  re-materialises it.
+- **`OnEvictError`.** Eviction has nobody to return an error to. When `OnClose`
+  is a final WAL flush, a swallowed failure means that namespace's writes are
+  gone — on the one path the whole "disk is a cache, object storage is the truth"
+  model depends on. Nil keeps it silent, and that has to be a decision.
+- **One spelling, and containment checked on the RESULT.** `canonical` cleans
+  the name and requires it to begin with a letter — one rule that rejects the
+  absolute form, the dot-relative form, the empty name, and `a/../../b` at once.
+  Cleaning matters as much as rejecting: `org//acme`, `org/acme/` and `org/acme`
+  are one file under three strings, and keyed raw they would open three entries
+  streaming one history from three replicators. `pathFor` then checks the
+  RESULT — the cleaned join must still sit under `Dir` — which covers
+  separators, dot-segments and encodings alike where a denylist over the input
+  does not.
 
-Then `commerce/db.Manager` collapses into it — that duplication disappears rather
-than being maintained in two places — and `hanzoai/git` embedding into
-`hanzoai/cloud` gets the same thing for free instead of inventing a third
-version.
+Then `commerce/db.Manager` collapses into this, and `hanzoai/git` embedded in
+`hanzoai/cloud` gets it rather than inventing a third version.
 
 ### Durability: `orm/replicated`, a separate module
 
-`db.Registry` declares three seams and fills in none of them — `Materialize` on
-a local miss, `OnOpen`/`OnClose` around a handle's life. `orm/replicated` fills
-them with `hanzoai/replicate`:
+`db.Namespaces` declares three seams and fills in none of them — `Materialize`
+on a local miss, `OnOpen`/`OnClose` around a handle's life. `orm/replicated`
+fills them with `hanzoai/replicate` and returns the same `*db.Namespaces`, so
+callers see one type whether or not replication is configured:
 
-    replicated.Registry(replicated.Config[db.DB]{
-        RegistryConfig: db.RegistryConfig[db.DB]{Dir: dir, MaxOpen: 64, Open: db.OpenSQLiteTenant},
+    replicated.Namespaces(replicated.Config[db.DB]{
+        NamespacesConfig: db.NamespacesConfig[db.DB]{Dir: dir, MaxOpen: 64, Open: db.OpenNamespace},
     })
 
-- **OnOpen** starts a stream for THAT tenant file at `<base>/<type>/<id>`.
+- **OnOpen** starts a stream for THAT file at `<base>/<namespace>`.
 - **OnClose** flushes and stops it — the eviction checkpoint.
 - **Materialize** restores the file from that prefix; nothing there means a new
-  tenant, so the registry opens an empty database.
+  namespace, so an empty database is opened.
 
 One stream per FILE, never one over the directory: a replica URL is a key prefix
 whose LTX history belongs to a single database, and a directory-wide replicator
-cannot start when one tenant arrives and stop when that one is evicted. Per-file
-lifetime *is* the capability — it is what lets a node evict a tenant and any
-other node re-materialise it.
+cannot start when one namespace arrives and stop when that one is evicted.
+Per-file lifetime *is* the capability — it is what lets a node evict a namespace
+and any other node re-materialise it.
+
+Filling a seam is exclusive: passing your own `Materialize`/`OnOpen`/`OnClose`
+alongside `RemoteURL` is an error, not an overwrite, because silently replacing a
+caller's hook with replication (or the reverse) is how a file ends up open with
+nothing shipping its WAL.
 
 **Why a separate module.** `hanzoai/replicate` brings the AWS/GCS/Azure SDKs
 with it. Putting the binding in `orm` proper would charge every consumer of the
@@ -355,24 +383,34 @@ arrives with the capability. `require github.com/hanzoai/orm/replicated` and you
 have durability; do not and `orm`'s dependency graph is unchanged.
 
 **Configuration** is `REPLICATE_S3_ENDPOINT` and friends, as everywhere else.
-With none set (and no explicit `RemoteURL`) `replicated.Registry` returns the
-plain local registry — a laptop and a cluster run the same construction path.
+With none set (and no explicit `RemoteURL`) `replicated.Namespaces` returns the
+plain local collection — a laptop and a cluster run the same construction path,
+and a dev box that takes a different code path to run is a dev box that drifts.
 Encryption is fail-closed: with a destination configured and no
-`REPLICATE_AGE_RECIPIENT`, opening a tenant fails rather than streaming customer
-data in the clear.
+`REPLICATE_AGE_RECIPIENT`, opening a namespace fails rather than streaming
+customer data in the clear.
 
-**One writer per tenant.** Two nodes holding one tenant open stream two histories
-to one prefix and the loser's writes are gone. Nothing in the registry enforces
-it; the tenant key is the shard key, so route a tenant to one node — the same
+`RemoteURL` is a replica URL (`s3://`, `gs://`, `abs://`, `file://`), not an
+endpoint, because that is the value replicate already speaks — moving a
+deployment to another backend is a URL change, not a code change. The namespace
+goes into that URL's PATH, never concatenated onto the end: the base carries
+query parameters (`?endpoint=…&region=…`), so appending would put every namespace
+at the bucket root. It must not be node-scoped either — a prefix carrying a
+hostname makes each node's replicas invisible to the others, which defeats the
+point.
+
+**One writer per namespace.** Two nodes holding one namespace open stream two
+histories to one prefix and the loser's writes are gone. Nothing here enforces
+it; the namespace is the shard key, so route each to one node — the same
 constraint the repositories have, below.
 
 ### The constraint that does not go away
 
 This makes the *database* horizontally scalable, not the *repositories*. git
 needs POSIX rename-into-place, locking and mmap'd packfiles, which an object
-store does not provide. With per-tenant DBs the honest repo story is sharding on
-the same tenant key, so a node owns a tenant's repos and its DB together. Do not
-let "SQLite is on S3 now" imply repos can be.
+store does not provide. With per-namespace DBs the honest repo story is sharding
+on the same key, so a node owns a namespace's repos and its database together. Do
+not let "SQLite is on S3 now" imply repos can be.
 
 ## Raw-SQL survey across the Go backends — migration plan
 
@@ -391,8 +429,8 @@ the number "98 files" looks terrifying.
    and a file can flip its import while its neighbours have not. Zero behaviour
    change, zero data migration, mechanical, reviewable by `git diff --stat`.
 2. **Handle-lifecycle consolidation.** Hand-rolled per-tenant `*sql.DB` pools →
-   `orm/db.Registry` (v0.6.8). Deletes duplicated code. Same schema, same
-   queries, same SQL. Medium risk because it is the live open path.
+   `orm/db.Namespaces`. Deletes duplicated code. Same schema, same queries, same
+   SQL. Medium risk because it is the live open path.
 3. **Record-model conversion.** Hand-written relational tables → `orm.Model[T]`
    over the JSON `_entities` table. This is a **schema rewrite**: typed columns
    and their indexes become `json_extract(data,'$.field')`, and every existing
@@ -607,10 +645,11 @@ calls. Repoint those and the remaining 49 files follow mostly by import line.
 **Guard rail: `object/datastore.go` does not move.** It is the Datastore seam
 for the entire stack (see above) and belongs to datastore.
 
-**3. commerce — delete `db/` in favour of `orm/db.Registry`.** 6743 LOC of
-private fork. `db.Manager.User()/Org()` is exactly `Registry.Do(ctx, Tenant, fn)`
-with the unbounded-map bug that section "Tenant database lifecycle lives HERE"
-already documents (no eviction, handles only closed by `Manager.Close()`).
+**3. commerce — delete `db/` in favour of `orm/db.Namespaces`.** 6743 LOC of
+private fork. `db.Manager.User()/Org()` is exactly
+`Namespaces.With(ctx, "user/<id>"|"org/<id>", fn)` with the unbounded-map bug
+that section "Namespace database lifecycle lives HERE" already documents (no
+eviction, handles only closed by `Manager.Close()`).
 commerce already pins orm v0.6.8 and already has 138 files importing orm for its
 models, so this is the *last* private layer. Medium risk — it is the live tenant
 open path — but the bound and the S3 materialisation are a strict improvement,
@@ -650,8 +689,8 @@ typed columns and indexes.
 - **What to do:** repoint the *handle* layer. `orgdb.go` (526 LOC) is already
   "the SOLE place cloud opens an org SQLite file", and `clients/goja/basestore.go`
   already implements an LRU + idle-TTL tenant pool (`defaultMaxOpen = 256`,
-  `defaultIdleTTL = 5m`) — that is `orm/db.Registry` written twice more. Collapse
-  both into Registry and cloud gets S3 materialisation for free. Then migrate
+  `defaultIdleTTL = 5m`) — that is `orm/db.Namespaces` written twice more.
+  Collapse both into it and cloud gets S3 materialisation for free. Then migrate
   store *queries* to `orm/query` package by package, cheapest first
   (`clients/{prefs,guide,ingress,gateway/edge}` are already doc-column stores:
   `ON CONFLICT(...) DO UPDATE SET doc=excluded.doc` over `(org, kind, id, doc,

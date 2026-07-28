@@ -5,6 +5,39 @@ All notable changes to `github.com/hanzoai/orm` are documented here.
 The format is loosely [Keep a Changelog](https://keepachangelog.com/) and
 versioning follows [SemVer](https://semver.org/).
 
+## v0.6.17
+
+### Removed
+
+- `db.Manager`, `db.Config`, `db.DefaultConfig`, `db.Layer` (+ `LayerUser`,
+  `LayerOrg`, `LayerDatastore`, `LayerAll`). `Manager` was a second, worse
+  `Namespaces`: an unbounded `map[string]DB` per hardcoded tenant kind, handles
+  closed only by `Manager.Close()`, no materialisation, no eviction — the exact
+  shape `Namespaces` exists to prevent, shipped next to it. `Config` existed
+  only to configure `Manager`, and its `SQLite` defaults had already drifted
+  from the ones `configPragmas` actually applies (`CacheSize` -16000 vs
+  -32000), so it was a second answer that gave a different one. `Layer` had no
+  reader anywhere. Nothing in the fleet imported any of them; `SQLiteConfig`
+  and `SQLiteDBConfig` — the ones that are used — are untouched.
+
+### Changed
+
+- `Namespaces.Open() int` → **`Namespaces.Held() int`**. It reports how many
+  databases are currently held open; `Open` on the same type is the opener in
+  `NamespacesConfig`, and one word cannot be both a count and an action.
+- The namespace rename is finished below the type names. `Namespace` /
+  `Namespaces` / `NamespacesConfig` / `OpenNamespace` landed in v0.6.13–v0.6.16
+  with no changelog entry, but the parameters, fields and prose underneath still
+  said "tenant" and "registry" — including a doc comment naming a `Do` method
+  that no longer exists. Identifiers are now `ns`, the entry field is `ns`, and
+  the receiver is `n`. No behaviour change.
+- `replicated/go.mod` gains `replace github.com/hanzoai/orm => ../`. The two
+  modules move together in one repo, so a build from a checkout now tests the
+  tree instead of the last published orm — without it a change to a seam here
+  goes green against the old orm and breaks on release, which is how
+  `Held` was first missed. Go honours `replace` only in the main module, so a
+  consumer's build is unaffected and still resolves the required version.
+
 ## v0.6.16
 
 ### Changed
