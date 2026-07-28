@@ -1,9 +1,16 @@
-// Package db provides a multi-layer database abstraction supporting:
-// - User-level SQLite with sqlite-vec for personal data and vector search
-// - Organization-level SQLite for shared tenant data
-// - PostgreSQL with pgvector for scalable deployments
-// - MongoDB/FerretDB for document storage
-// - Hanzo Datastore for deep analytics
+// Package db is the relational plane: entities in a database, one database per
+// namespace.
+//
+// DB is the entity contract, implemented here by SQLite (with sqlite-vec for
+// vector search) and by ZAP for the backends that speak it — hanzo/sql over
+// PostgreSQL, document storage, KV. Namespaces owns the other half: which
+// database a namespace resolves to, how many stay open, and when a cold one is
+// closed.
+//
+// Datastore is declared here and implemented in orm/datastore. It is the
+// analytics plane — measurements in one shared columnar store, where a tenant is
+// a column rather than a database — and it deliberately shares no connection
+// with this one.
 package db
 
 import (
