@@ -10,7 +10,7 @@ go 1.26.5
 replace github.com/hanzoai/orm => ../
 
 require (
-	github.com/hanzoai/orm v0.6.16
+	github.com/hanzoai/orm v0.6.17
 	github.com/hanzoai/replicate v0.9.6
 	github.com/luxfi/age v1.6.0
 )
