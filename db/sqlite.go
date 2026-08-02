@@ -708,7 +708,7 @@ func (db *SQLiteDB) AllocateIDs(kind string, parent Key, n int) ([]Key, error) {
 	for i := 0; i < n; i++ {
 		keys[i] = &sqliteKey{
 			kind:      kind,
-			stringID:  GenerateID(),
+			stringID:  newStringID(),
 			parent:    parent,
 			namespace: db.config.Namespace,
 		}
@@ -760,7 +760,7 @@ func (k *sqliteKey) Encode() string {
 		return fmt.Sprintf("%d", k.intID)
 	}
 	if k.incomplete {
-		k.stringID = GenerateID()
+		k.stringID = newStringID()
 		k.incomplete = false
 	}
 	return k.stringID

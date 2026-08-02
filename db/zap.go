@@ -270,19 +270,19 @@ func (z *ZapDB) NewKey(kind string, stringID string, intID int64, parent Key) Ke
 		id = fmt.Sprintf("%d", intID)
 	}
 	if id == "" {
-		id = GenerateID()
+		id = newStringID()
 	}
 	return &zapKey{kind: kind, stringID: id, intID: intID, parent: parent}
 }
 
 func (z *ZapDB) NewIncompleteKey(kind string, parent Key) Key {
-	return z.NewKey(kind, GenerateID(), 0, parent)
+	return z.NewKey(kind, newStringID(), 0, parent)
 }
 
 func (z *ZapDB) AllocateIDs(kind string, parent Key, n int) ([]Key, error) {
 	keys := make([]Key, n)
 	for i := 0; i < n; i++ {
-		keys[i] = z.NewKey(kind, GenerateID(), 0, parent)
+		keys[i] = z.NewKey(kind, newStringID(), 0, parent)
 	}
 	return keys, nil
 }

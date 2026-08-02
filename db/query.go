@@ -74,8 +74,19 @@ func LowercaseFirst(s string) string {
 	return string(runes)
 }
 
-// GenerateID creates a unique string ID from timestamp.
-func GenerateID() string {
+// newStringID allocates the string ID of a key the store assigns itself: the
+// wall-clock nanosecond with a process-local sequence appended, e.g.
+// "17847909129933610000001". Keys come out roughly time-ordered, which is why
+// it is a clock and not a UUID.
+//
+// It is unique WITHIN A PROCESS ONLY, and deliberately unexported so nothing
+// outside this package can mistake it for a general ID generator. Two
+// processes that read the same nanosecond and are at the same point in their
+// own sequence produce the same value; the counter is per-process and wraps at
+// 10000. Anything that must be unique across processes wants a UUID
+// (uuid.NewString), not this. Callers that need a store-assigned key should go
+// through NewIncompleteKey or AllocateIDs.
+func newStringID() string {
 	seq := atomic.AddUint64(&idCounter, 1)
 	return fmt.Sprintf("%d%04d", timeNow().UnixNano(), seq%10000)
 }
