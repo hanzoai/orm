@@ -98,7 +98,7 @@ func NewSQLiteDB(cfg *SQLiteDBConfig) (*SQLiteDB, error) {
 	readDB.SetMaxOpenConns(cfg.Config.MaxOpenConns)
 	readDB.SetMaxIdleConns(cfg.Config.MaxIdleConns)
 
-	writeDB, err := sql.Open("sqlite", dsn)
+	writeDB, err := sql.Open("sqlite", immediateTx(dsn))
 	if err != nil {
 		readDB.Close()
 		return nil, fmt.Errorf("db: failed to open write connection: %w", err)
@@ -124,6 +124,45 @@ func NewSQLiteDB(cfg *SQLiteDBConfig) (*SQLiteDB, error) {
 	}
 
 	return db, nil
+}
+
+// immediateTx makes every transaction on the returned DSN begin with
+// BEGIN IMMEDIATE instead of BEGIN.
+//
+// It is applied to the WRITE pool only, and it is what makes a read-modify-write
+// correct when a second PROCESS holds the same file open — the shape every
+// rolling upgrade of a PVC-backed service passes through, and the shape
+// `writeMu` cannot cover because a mutex ends at the process boundary.
+//
+// Under a deferred BEGIN a writer takes a SHARED lock and upgrades on its first
+// write. Two processes therefore both enter a transaction, both READ the same
+// row, and whichever writes second does so from a snapshot taken before the
+// first one committed — a lost update, silently, with both transactions
+// reporting success. That is the failure `internal/users/lockout.go` in
+// hanzoai/iam counts on not happening when it reads a lockout counter, adds
+// one, and writes it back.
+//
+// BEGIN IMMEDIATE takes the RESERVED lock at BEGIN. The second writer blocks
+// there (up to busy_timeout) and does not read until the first has committed,
+// so its read-modify-write sees the committed value. Serialization moves from
+// "whoever writes first" to "whoever begins first", which is the property a
+// transaction is supposed to have.
+//
+// `_txlock` is a raw DSN parameter, not a pragma, so it cannot ride in
+// configPragmas: modernc reads it as `_txlock=` (sqlite.go, beginMode) and
+// mattn reads it as `_txlock=`, while PragmaDSN would render a pragma as
+// `_pragma=txlock(immediate)` on the pure-Go backend — a name SQLite has no
+// pragma for, silently inert. Both backends spell this one the same way, which
+// is why it is appended to the built DSN rather than declared beside the
+// pragmas.
+//
+// The read pool keeps the deferred default: a reader that took the reserved
+// lock would serialize reads behind writes for no gain.
+func immediateTx(dsn string) string {
+	if strings.Contains(dsn, "?") {
+		return dsn + "&_txlock=immediate"
+	}
+	return dsn + "?_txlock=immediate"
 }
 
 // configPragmas maps SQLiteConfig to the canonical pragma set, applying config
