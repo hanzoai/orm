@@ -71,6 +71,10 @@ func (SQLite) Columns() string {
 		` WHERE m.type IN ('table', 'view'))`
 }
 
+func (SQLite) Prelude() string { return "" }
+
+func (SQLite) Format() string { return "strftime" }
+
 func (SQLite) Row() string { return "_rowid_" }
 
 func (SQLite) Optimize() string { return "PRAGMA optimize" }

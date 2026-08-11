@@ -101,6 +101,15 @@ func (Postgres) Columns() string {
 		` WHERE c.table_schema = current_schema())`
 }
 
+// A case-insensitive comparison is spelled COLLATE NOCASE, which is a
+// collation SQLite is born with and Postgres has to be given. Nondeterministic
+// so that equality itself folds case, rather than only the sort order.
+func (Postgres) Prelude() string {
+	return `CREATE COLLATION IF NOT EXISTS nocase (provider = icu, locale = 'und-u-ks-level2', deterministic = false)`
+}
+
+func (Postgres) Format() string { return "" }
+
 func (Postgres) Row() string { return "" }
 
 func (Postgres) Optimize() string { return "ANALYZE" }

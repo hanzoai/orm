@@ -58,6 +58,15 @@ type Dialect interface {
 	// name, type, notnull, dflt_value and pk.
 	Columns() string
 
+	// Prelude is the statements a schema needs before any of it exists —
+	// collations and the like — "" where the engine already has them.
+	Prelude() string
+
+	// Format is the name of the function rendering an instant through a
+	// format string, "" where the engine has none and a caller must refuse
+	// rather than approximate.
+	Format() string
+
 	// Row is the column carrying insertion order, "" where the engine has
 	// none and a caller must fall back to an ordinary column.
 	Row() string
