@@ -24,6 +24,8 @@ func (SQLite) Random(n int) string {
 
 func (SQLite) Json() string { return "JSON" }
 
+func (SQLite) Bytes() string { return "BLOB" }
+
 func (SQLite) Array(expr string) string {
 	return fmt.Sprintf(
 		"(CASE WHEN json_valid(%s) AND json_type(%s) = 'array' THEN %s ELSE json_array(%s) END)",
