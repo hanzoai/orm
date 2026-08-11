@@ -26,6 +26,8 @@ func (Postgres) Random(n int) string {
 
 func (Postgres) Json() string { return "JSONB" }
 
+func (Postgres) Bytes() string { return "BYTEA" }
+
 func (Postgres) Array(expr string) string {
 	return fmt.Sprintf(
 		"(CASE WHEN (%s)::text IS JSON ARRAY THEN (%s)::jsonb ELSE jsonb_build_array((%s)::text) END)",

@@ -31,6 +31,9 @@ type Dialect interface {
 	// Json is the column type for a value holding JSON.
 	Json() string
 
+	// Bytes is the column type for a value holding opaque binary.
+	Bytes() string
+
 	// Array reads expr as a JSON array, wrapping a bare scalar in one.
 	Array(expr string) string
 
