@@ -34,6 +34,19 @@ type Dialect interface {
 	// Bytes is the column type for a value holding opaque binary.
 	Bytes() string
 
+	// Like is the operator matching a value against a pattern without regard
+	// to case, so one filter selects the same rows on either engine.
+	Like() string
+
+	// Bool is the literal for a truth value.
+	Bool(v bool) string
+
+	// Number reads expr — a value read out of a JSON document, which arrives
+	// as text whatever the document held — as a number, for an engine that
+	// compares a number only to a number. Text that is not a numeral reads as
+	// null, so comparing it to a number is false rather than an error.
+	Number(expr string) string
+
 	// Array reads expr as a JSON array, wrapping a bare scalar in one.
 	Array(expr string) string
 

@@ -26,6 +26,20 @@ func (SQLite) Json() string { return "JSON" }
 
 func (SQLite) Bytes() string { return "BLOB" }
 
+// SQLite's LIKE folds the case of ASCII on its own.
+func (SQLite) Like() string { return "LIKE" }
+
+func (SQLite) Bool(v bool) string {
+	if v {
+		return "1"
+	}
+	return "0"
+}
+
+// SQLite compares a numeral as a number and anything else as what it is, which
+// is what reading one as a number amounts to.
+func (SQLite) Number(expr string) string { return expr }
+
 func (SQLite) Array(expr string) string {
 	return fmt.Sprintf(
 		"(CASE WHEN json_valid(%s) AND json_type(%s) = 'array' THEN %s ELSE json_array(%s) END)",

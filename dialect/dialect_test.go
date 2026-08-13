@@ -137,6 +137,62 @@ func TestSQLiteRuns(t *testing.T) {
 	}
 }
 
+// The three spellings a comparison is built from. SQLite's are run; the
+// Postgres ones are read, since they differ from SQLite's precisely where a
+// caller composing one string for both engines would otherwise get the
+// SQLite-shaped answer.
+func TestComparison(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	d := dialect.For("sqlite")
+
+	if _, err = db.Exec(`CREATE TABLE c (title TEXT, active INTEGER, meta TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`INSERT INTO c VALUES ('Item', 1, '{"n":3}'), ('ITEM', 0, '{"n":"nine"}')`); err != nil {
+		t.Fatal(err)
+	}
+
+	var n int
+	if err = db.QueryRow(`SELECT count(*) FROM c WHERE title ` + d.Like() + ` '%item%'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("Like matched %d of 2 rows differing only in case", n)
+	}
+
+	if err = db.QueryRow(`SELECT count(*) FROM c WHERE active = ` + d.Bool(true)).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("Bool(true) matched %d rows, want 1", n)
+	}
+
+	// One row holds a number under .n and the other holds a word, so this also
+	// asserts that a JSON value which is not a numeral simply fails to match.
+	if err = db.QueryRow(`SELECT count(*) FROM c WHERE ` + d.Number(d.Extract("meta", ".n")) + ` < 5`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("Number over a JSON value matched %d rows, want 1", n)
+	}
+
+	pg := dialect.For("pgx")
+	if pg.Like() != "ILIKE" {
+		t.Errorf("postgres Like = %s", pg.Like())
+	}
+	if pg.Bool(true) != "'true'" || pg.Bool(false) != "'false'" {
+		t.Errorf("postgres Bool = %s/%s", pg.Bool(true), pg.Bool(false))
+	}
+	if !strings.Contains(pg.Number("x"), "::numeric") {
+		t.Errorf("postgres Number = %s", pg.Number("x"))
+	}
+}
+
 func TestQuote(t *testing.T) {
 	if got := dialect.For("sqlite").Quote("a`b"); got != "`a``b`" {
 		t.Errorf("sqlite Quote = %s", got)

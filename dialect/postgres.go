@@ -28,6 +28,27 @@ func (Postgres) Json() string { return "JSONB" }
 
 func (Postgres) Bytes() string { return "BYTEA" }
 
+// ILIKE rather than the nocase collation below, which LIKE accepts only from
+// PostgreSQL 18 on.
+func (Postgres) Like() string { return "ILIKE" }
+
+// Quoted, so that one spelling serves both operands a truth value is compared
+// to: beside a boolean the literal reads as a boolean, and beside a value read
+// out of a JSON document it reads as the text that document held.
+func (Postgres) Bool(v bool) string {
+	if v {
+		return "'true'"
+	}
+	return "'false'"
+}
+
+func (Postgres) Number(expr string) string {
+	return fmt.Sprintf(
+		"(CASE WHEN (%s) ~ '^[+-]?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$' THEN (%s)::numeric END)",
+		expr, expr,
+	)
+}
+
 func (Postgres) Array(expr string) string {
 	return fmt.Sprintf(
 		"(CASE WHEN (%s)::text IS JSON ARRAY THEN (%s)::jsonb ELSE jsonb_build_array((%s)::text) END)",
