@@ -1,0 +1,15 @@
+# Canonical CI/CD config for hanzoai/orm — read by the hanzoai/ci reusable
+# (.hanzo/workflows/cicd.yml) and by platform.hanzo.ai.
+#
+# A Go library: ships from a tag as a module, builds no image, so no `images:`
+# and no `deploy:`.
+#
+# `replicated/` carries its OWN go.mod, so the root `./...` does not reach it —
+# a second module is invisible to the first one's build. Gated explicitly, or
+# it ships ungated forever.
+
+test:
+  - name: build
+    run: go build ./... && (cd replicated && go build ./...)
+  - name: test
+    run: go test -count=1 ./... && (cd replicated && go test -count=1 ./...)
