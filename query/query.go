@@ -261,6 +261,31 @@ var (
 	// NewQuery builds a raw Query with a SQL string.
 	NewQuery = dbx.NewQuery
 
+	// Raw is NewQuery under a name that can be audited.
+	//
+	// Both build the same thing. The difference is that `NewQuery` reads like
+	// ordinary construction, so raw SQL written through it is indistinguishable
+	// from every other line in a store — and what cannot be found cannot be
+	// counted or reviewed. `grep -r 'query.Raw'` IS the inventory of SQL the
+	// builder cannot express, per repo, at any moment.
+	//
+	// Four things earn it, because the builder genuinely has no form for them:
+	//
+	//	RETURNING                      no builder
+	//	FTS5 MATCH / virtual table     no predicate form, no DDL form
+	//	sqlite-vec vec0 KNN on a caller-owned table
+	//	anything the dialect cannot spell for the backend in hand
+	//
+	// ON CONFLICT ... DO UPDATE is NOT on that list any more: dbx has an Upsert
+	// builder, and the "not supported" it used to return on SQLite was a missing
+	// override in a package we own rather than a limit. Read a refusal from our
+	// own code as a bug until proven otherwise.
+	//
+	// Anything else: build it, or extend the builder. A Raw that could have been
+	// a builder call is a query no dialect can retarget, which is the whole cost
+	// of the escape hatch and the reason it is worth naming.
+	Raw = dbx.NewQuery
+
 	// NewSelectQuery builds an empty SelectQuery.
 	NewSelectQuery = dbx.NewSelectQuery
 
