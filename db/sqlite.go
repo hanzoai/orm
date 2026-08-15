@@ -968,6 +968,49 @@ func (q *sqliteQuery) Count(ctx context.Context) (int, error) {
 	return count, err
 }
 
+// Sum totals one numeric field over the selected rows. Non-numeric and absent
+// values contribute nothing: json_extract yields NULL, and SUM skips NULLs.
+func (q *sqliteQuery) Sum(ctx context.Context, field string) (float64, error) {
+	total, _, err := q.reduce(ctx, field)
+	return total, err
+}
+
+// Avg is the mean of that field, with the count it was taken over so a caller can
+// tell an average of nothing from an average that happens to be zero.
+func (q *sqliteQuery) Avg(ctx context.Context, field string) (float64, int, error) {
+	total, n, err := q.reduce(ctx, field)
+	if err != nil || n == 0 {
+		return 0, n, err
+	}
+	return total / float64(n), n, nil
+}
+
+// reduce is the one statement both aggregates read, so they can never disagree
+// about which rows counted. It counts the rows that CONTRIBUTED — those whose
+// field is a number — not the rows the filter matched, which is what makes Avg
+// the mean of the values present rather than of the rows scanned.
+func (q *sqliteQuery) reduce(ctx context.Context, field string) (float64, int, error) {
+	where, args := q.buildWhere()
+	expr := fmt.Sprintf("json_extract(data, '$.%s')", ToJSONFieldName(field))
+	query := fmt.Sprintf(
+		`SELECT COALESCE(SUM(CAST(%s AS REAL)), 0), COUNT(%s) FROM _entities WHERE kind = ? AND deleted = 0%s`,
+		expr, expr, where)
+	args = append([]interface{}{q.kind}, args...)
+
+	var row *sql.Row
+	if q.tx != nil {
+		row = q.tx.QueryRowContext(ctx, query, args...)
+	} else {
+		row = q.db.readDB.QueryRowContext(ctx, query, args...)
+	}
+	var total float64
+	var n int
+	if err := row.Scan(&total, &n); err != nil {
+		return 0, 0, err
+	}
+	return total, n, nil
+}
+
 func (q *sqliteQuery) Keys(ctx context.Context) ([]Key, error) {
 	where, args := q.buildWhere()
 	query := fmt.Sprintf(`SELECT id FROM _entities WHERE kind = ? AND deleted = 0%s`, where)

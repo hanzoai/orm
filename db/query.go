@@ -23,11 +23,21 @@ type QueryOrder struct {
 }
 
 // ParseFilterString parses "Field=" into field and operator.
+// ParseFilterString splits "field op" — the Datastore spelling, where the operator
+// rides on the end of the string and is separated from the field by a space.
+//
+// That space is not decoration and it must be cut. It used to survive into the
+// field, so `Filter("model =", v)` looked for the property `"model "`, which no
+// entity has: json_extract returned NULL, the predicate matched nothing, and the
+// query answered ZERO ROWS with no error. Every filtered read in this package was
+// empty, and empty is what an honest "no matches" looks like — so nothing reported
+// it. Trim both ends; a caller who writes extra spaces means the field.
 func ParseFilterString(s string) (field, op string) {
-	operators := []string{">=", "<=", "!=", "=", ">", "<"}
-	for _, opStr := range operators {
+	s = strings.TrimSpace(s)
+	// Longest first: ">=" must not be read as ">" with a stray "=" on the field.
+	for _, opStr := range []string{">=", "<=", "!=", "=", ">", "<"} {
 		if strings.HasSuffix(s, opStr) {
-			return strings.TrimSuffix(s, opStr), opStr
+			return strings.TrimSpace(strings.TrimSuffix(s, opStr)), opStr
 		}
 	}
 	return s, "="
