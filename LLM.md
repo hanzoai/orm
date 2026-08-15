@@ -707,7 +707,7 @@ typed columns and indexes.
 
 **Not needed: iam.** Already migrated — 144 files import orm, 21 kinds
 registered, zero raw SQL in the serving path. The 8 `database/sql` files are
-`cmd/migrate-v1` (reads the legacy Casdoor SQLite; speaking raw SQL to a foreign
+`cmd/migrate-v1` (reads the legacy v1 SQLite; speaking raw SQL to a foreign
 schema is the job) and `internal/compare` (a `SELECT COUNT(*)` drift gate against
 v1, linked only under the `migration` build tag). Both are correct as raw SQL and
 should stay. iam is the reference implementation of the endgame, not a target.
