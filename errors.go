@@ -1,6 +1,7 @@
 package orm
 
 import (
+	"database/sql"
 	"errors"
 
 	ormdb "github.com/hanzoai/orm/db"
@@ -27,3 +28,24 @@ var (
 	// immediately by a re-panic.
 	ErrTxPanic = errors.New("orm: tx callback panicked")
 )
+
+// IsNotFound reports whether err means "no such entity", whichever backend said
+// so.
+//
+// The two sentinels are the same fact told by different layers: orm's own
+// ErrNotFound, and database/sql's ErrNoRows from any store built on a SQL
+// driver. A caller wants to know that the thing is not there; which layer
+// noticed is not its business.
+//
+// It is a PREDICATE and not a wrapping, deliberately. Making ErrNotFound wrap
+// sql.ErrNoRows would weld orm's public sentinel to database/sql, which is a lie
+// on the ZAP, KV and document backends where no SQL exists and no rows were
+// consulted. The value is "not found", not "SQL returned no rows".
+//
+// It also lets a store migrate one layer at a time: callers can ask this today
+// while the store beneath them still returns sql.ErrNoRows, and keep asking it
+// unchanged after the store moves to orm. Without it, changing what a store
+// returns is a flag day across every caller at once.
+func IsNotFound(err error) bool {
+	return errors.Is(err, ErrNotFound) || errors.Is(err, sql.ErrNoRows)
+}
