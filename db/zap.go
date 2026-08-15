@@ -715,7 +715,7 @@ func (q *zapQuery) Count(ctx context.Context) (int, error) {
 	ctx, cancel := context.WithTimeout(ctx, q.db.cfg.QueryTimeout)
 	defer cancel()
 
-	sql, args := q.buildSQL(true)
+	sql, args := q.buildSQL("COUNT(*) as count")
 	body, _ := json.Marshal(map[string]interface{}{"sql": sql, "args": args})
 	_, resp, err := q.db.call(ctx, "/query", body)
 	if err != nil {
@@ -734,20 +734,60 @@ func (q *zapQuery) Count(ctx context.Context) (int, error) {
 	return 0, nil
 }
 
+// zapRows is the select list that returns entities rather than a reduction.
+const zapRows = "id, data"
+
+// Sum totals one numeric field over the selected rows.
+func (q *zapQuery) Sum(ctx context.Context, field string) (float64, error) {
+	total, _, err := q.reduce(ctx, field)
+	return total, err
+}
+
+// Avg is the mean of that field, with the count it was taken over.
+func (q *zapQuery) Avg(ctx context.Context, field string) (float64, int, error) {
+	total, n, err := q.reduce(ctx, field)
+	if err != nil || n == 0 {
+		return 0, n, err
+	}
+	return total / float64(n), n, nil
+}
+
+// reduce asks for both numbers in one statement, so Sum and Avg cannot disagree
+// about which rows contributed.
+func (q *zapQuery) reduce(ctx context.Context, field string) (float64, int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, q.db.cfg.QueryTimeout)
+	defer cancel()
+
+	expr := fmt.Sprintf("json_extract(data, '$.%s')", ToJSONFieldName(field))
+	sql, args := q.buildSQL(fmt.Sprintf(
+		"COALESCE(SUM(CAST(%s AS REAL)), 0) as total, COUNT(%s) as n", expr, expr))
+	body, _ := json.Marshal(map[string]interface{}{"sql": sql, "args": args})
+	_, resp, err := q.db.call(ctx, "/query", body)
+	if err != nil {
+		return 0, 0, err
+	}
+	var rows []map[string]interface{}
+	json.Unmarshal(resp, &rows)
+	if len(rows) == 0 {
+		return 0, 0, nil
+	}
+	total, _ := rows[0]["total"].(float64)
+	n, _ := rows[0]["n"].(float64)
+	return total, int(n), nil
+}
+
 func (q *zapQuery) Keys(ctx context.Context) ([]Key, error) { return q.GetAll(ctx, nil) }
 func (q *zapQuery) Run(ctx context.Context) Iterator        { return nil }
 
-func (q *zapQuery) buildSQL(countOnly bool) (string, []interface{}) {
+func (q *zapQuery) buildSQL(sel string) (string, []interface{}) {
 	table := q.db.cfg.Collection
 	args := []interface{}{q.kind}
 	idx := 2
 
-	var sql string
-	if countOnly {
-		sql = fmt.Sprintf("SELECT COUNT(*) as count FROM %s WHERE kind = $1 AND deleted = false", table)
-	} else {
-		sql = fmt.Sprintf("SELECT id, data FROM %s WHERE kind = $1 AND deleted = false", table)
-	}
+	sql := fmt.Sprintf("SELECT %s FROM %s WHERE kind = $1 AND deleted = false", sel, table)
 
 	for _, f := range q.filters {
 		jsonField := ToJSONFieldName(f.field)
@@ -757,7 +797,7 @@ func (q *zapQuery) buildSQL(countOnly bool) (string, []interface{}) {
 		idx++
 	}
 
-	if !countOnly {
+	if sel == zapRows {
 		if q.order != "" {
 			desc := q.order[0] == '-'
 			field := q.order
@@ -782,7 +822,7 @@ func (q *zapQuery) buildSQL(countOnly bool) (string, []interface{}) {
 }
 
 func (q *zapQuery) sqlGetAll(ctx context.Context, dst interface{}) ([]Key, error) {
-	sql, args := q.buildSQL(false)
+	sql, args := q.buildSQL(zapRows)
 	body, _ := json.Marshal(map[string]interface{}{"sql": sql, "args": args})
 	status, resp, err := q.db.call(ctx, "/query", body)
 	if err != nil {

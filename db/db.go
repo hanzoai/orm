@@ -220,6 +220,25 @@ type Query interface {
 	GetAll(ctx context.Context, dst interface{}) ([]Key, error)
 	First(ctx context.Context, dst interface{}) (Key, error)
 	Count(ctx context.Context) (int, error)
+
+	// Sum and Avg reduce ONE numeric field over the rows the filters select.
+	//
+	// They exist and GroupBy does not, because these three are what every backend
+	// this interface must reach can do: SQLite and SQL compute them in the engine,
+	// and Datastore serves them as aggregation queries. GROUP BY has no Datastore
+	// form at all, so putting it here would compile everywhere and ship on two
+	// backends out of three.
+	//
+	// Group by running one of these per group — Project+Distinct gives the keys.
+	// That makes the fan-out a number the caller can see and bound, rather than a
+	// keyword that reads as free and is not.
+	//
+	// A field that is absent or not a number contributes nothing rather than
+	// failing the query: a sum over rows where half predate the field is still the
+	// sum of the rows that have it. Sum of no rows is 0; Avg of no rows is 0 with
+	// n=0, so a caller can tell "nothing" from "zero".
+	Sum(ctx context.Context, field string) (float64, error)
+	Avg(ctx context.Context, field string) (avg float64, n int, err error)
 	Keys(ctx context.Context) ([]Key, error)
 	Run(ctx context.Context) Iterator
 	Start(cursor Cursor) Query
