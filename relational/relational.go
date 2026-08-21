@@ -9,6 +9,7 @@ import (
 	"database/sql"
 
 	"github.com/hanzoai/xorm"
+	"github.com/hanzoai/xorm/core"
 )
 
 type (
@@ -24,4 +25,18 @@ type (
 // NewEngine opens a relational engine backed by the given driver.
 func NewEngine(driverName, dataSourceName string, driverOptions ...func(db *sql.DB) error) (*Engine, error) {
 	return xorm.NewEngine(driverName, dataSourceName, driverOptions...)
+}
+
+// Bind returns an engine over a connection the caller already opened.
+//
+// It is the constructor for a host that owns its own open: an encrypted SQLite
+// file whose key the caller derives, a pool whose limits the caller has already
+// set, or any connection two subsystems must share. Opening a second handle to
+// the same file instead would be a second pool, and two pools disagree about
+// what is committed.
+//
+// driverName selects the dialect, and dataSourceName is read only to derive it,
+// so a host with nothing to say there may pass the empty string.
+func Bind(driverName, dataSourceName string, db *sql.DB) (*Engine, error) {
+	return xorm.NewEngineWithDB(driverName, dataSourceName, core.FromDB(db))
 }
