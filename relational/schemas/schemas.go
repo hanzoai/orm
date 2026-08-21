@@ -48,6 +48,15 @@ const (
 	GBASE8S  = schemas.GBASE8S
 )
 
+// The two kinds of index, for the indexType argument of NewIndex and the Type
+// field of Index. Named for the same reason the dialects are: forwarding a
+// constructor while withholding the only values its argument accepts leaves the
+// caller writing a bare 1 or 2.
+const (
+	IndexType  = schemas.IndexType
+	UniqueType = schemas.UniqueType
+)
+
 // Constructors, forwarded rather than aliased because Go has no alias for a
 // function. Each returns the engine's own value.
 
