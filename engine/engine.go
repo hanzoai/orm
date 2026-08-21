@@ -30,7 +30,12 @@ type Engine struct {
 
 // NewEngine creates an Engine from a driver name and DSN.
 func NewEngine(driver, dsn string) (*Engine, error) {
-	db, err := sql.Open(normalizeDriver(driver), dsn)
+	// The caller's OWN driver name, because only the caller knows what it
+	// registered. Normalizing it here rewrote "sqlite" to "sqlite3" — a name that
+	// resolves only under cgo, so a CGO_ENABLED=0 binary could not open at all —
+	// and would equally have sent a pgx caller to a "postgres" driver it never
+	// registered.
+	db, err := sql.Open(driver, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("engine: failed to open database: %w", err)
 	}
@@ -42,7 +47,7 @@ func NewEngine(driver, dsn string) (*Engine, error) {
 
 	return &Engine{
 		db:          db,
-		driver:      normalizeDriver(driver),
+		driver:      normalizeDialect(driver),
 		dsn:         dsn,
 		tables:      make(map[string]*TableMeta),
 		mapper:      names.SnakeMapper{},
@@ -54,15 +59,18 @@ func NewEngine(driver, dsn string) (*Engine, error) {
 func NewEngineWithDB(driver string, db *sql.DB) *Engine {
 	return &Engine{
 		db:          db,
-		driver:      normalizeDriver(driver),
+		driver:      normalizeDialect(driver),
 		tables:      make(map[string]*TableMeta),
 		mapper:      names.SnakeMapper{},
 		tableMapper: names.SnakeMapper{},
 	}
 }
 
-// normalizeDriver maps common driver name variants.
-func normalizeDriver(driver string) string {
+// normalizeDialect maps a driver name onto the SQL DIALECT it implies. It names
+// the grammar this engine generates — quoting, autoincrement, upsert — and never
+// a database/sql driver: those are two questions and one answer cannot serve
+// both, which is what braiding them cost.
+func normalizeDialect(driver string) string {
 	switch strings.ToLower(driver) {
 	case "postgres", "postgresql", "pgx":
 		return "postgres"

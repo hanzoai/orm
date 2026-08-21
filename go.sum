@@ -53,8 +53,6 @@ github.com/hanzoai/sqlcipher v0.1.0 h1:V9gKG3ZltN2ZCteDrOnXWfOeEe/YDhhUm9AorQEAu
 github.com/hanzoai/sqlcipher v0.1.0/go.mod h1:F0soUYM1i4sawOZUpRvVnWoUayPbeGVlGq01VXy9Aqg=
 github.com/hanzoai/sqlite v0.3.2 h1:B/TRunlIDZECEypmr6rHeNyWf37YZXvPJHBDEFMKn/g=
 github.com/hanzoai/sqlite v0.3.2/go.mod h1:a3llsefKbu2Iq/0rJ1mlWCaU2t2cXh+aze85x+oW72k=
-github.com/hanzoai/xorm v1.4.4 h1:2VRwh5BtOgbED+CAzHQ47sPZBgljBlKnJw1Ar6V6il0=
-github.com/hanzoai/xorm v1.4.4/go.mod h1:fn6acg0hHm5FKGKlUxFvXOTdvP2IXXRS1+NEjYG8Raw=
 github.com/hanzoai/xorm v1.4.5 h1:kxxmQ1BsVRr87CzIeFcWZi/Yj9M3JrDB+uKNdAEbvks=
 github.com/hanzoai/xorm v1.4.5/go.mod h1:6+eFVV9EfyF2nmP2ms4Y/odMllBVXGYkCH9bE/g9HTU=
 github.com/hanzokv/go/v9 v9.22.0 h1:zD4fh0NLBuVa8njIrXUivJCijlratzS1Yf7Y/uD5T00=
@@ -77,6 +75,8 @@ github.com/kr/text v0.2.0 h1:5Nx0Ya0ZqY2ygV366QzturHI13Jq95ApcVaJBhpS+AY=
 github.com/kr/text v0.2.0/go.mod h1:eLer722TekiGuMkidMxC/pM04lWEeraHUUmBw8l2grE=
 github.com/mattn/go-isatty v0.0.21 h1:xYae+lCNBP7QuW4PUnNG61ffM4hVIfm+zUzDuSzYLGs=
 github.com/mattn/go-isatty v0.0.21/go.mod h1:ZXfXG4SQHsB/w3ZeOYbR0PrPwLy+n6xiMrJlRFqopa4=
+github.com/mattn/go-sqlite3 v1.14.32 h1:JD12Ag3oLy1zQA+BNn74xRgaBbdhbNIDYvQUEuuErjs=
+github.com/mattn/go-sqlite3 v1.14.32/go.mod h1:Uh1q+B4BYcTPb+yiD3kU8Ct7aC0hY9fxUwlHK0RXw+Y=
 github.com/montanaflynn/stats v0.0.0-20171201202039-1bf9dbcd8cbe/go.mod h1:wL8QJuTMNUDYhXwkmfOly8iTdp5TEcJFWZD2D7SIkUc=
 github.com/ncruces/go-strftime v1.0.0 h1:HMFp8mLCTPp341M/ZnA4qaf7ZlsbTc+miZjCLOFAw7w=
 github.com/ncruces/go-strftime v1.0.0/go.mod h1:Fwc5htZGVVkseilnfgOVb9mKy6w1naJmn9CehxcKcls=
