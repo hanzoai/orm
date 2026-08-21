@@ -10,6 +10,7 @@ import (
 
 	"github.com/hanzoai/xorm"
 	"github.com/hanzoai/xorm/core"
+	"github.com/hanzoai/xorm/log"
 )
 
 type (
@@ -20,6 +21,18 @@ type (
 	IterFunc    = xorm.IterFunc
 	SyncOptions = xorm.SyncOptions
 	SyncResult  = xorm.SyncResult
+	LogLevel    = log.LogLevel
+)
+
+// How much the engine says. An engine that shares a process with a server
+// carrying its own log wants Silent, which is why the levels are here: reaching
+// for them should not mean reaching past this package.
+const (
+	Debug  = log.LOG_DEBUG
+	Info   = log.LOG_INFO
+	Warn   = log.LOG_WARNING
+	Err    = log.LOG_ERR
+	Silent = log.LOG_OFF
 )
 
 // NewEngine opens a relational engine backed by the given driver.
