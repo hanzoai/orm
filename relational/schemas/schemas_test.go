@@ -42,7 +42,7 @@ func TestConstructorsReturnEngineValues(t *testing.T) {
 		t.Errorf("NewPK lost its values: %v", got)
 	}
 
-	idx := NewIndex("idx_owner", 1)
+	idx := NewIndex("idx_owner", IndexType)
 	var _ *xschemas.Index = idx
 	if idx.Name != "idx_owner" {
 		t.Errorf("NewIndex lost its name: %q", idx.Name)
@@ -52,6 +52,25 @@ func TestConstructorsReturnEngineValues(t *testing.T) {
 	var _ *xschemas.Table = tbl
 	if tbl.Name != "t" {
 		t.Errorf("NewTable lost its name: %q", tbl.Name)
+	}
+}
+
+// An index kind decides whether the engine writes CREATE INDEX or CREATE UNIQUE
+// INDEX. If these two drifted from the engine's numbering, a unique constraint
+// declared through this package would be created as a plain index and duplicate
+// rows would start being accepted.
+func TestIndexKindConstantsMatchTheEngine(t *testing.T) {
+	if IndexType != xschemas.IndexType {
+		t.Errorf("IndexType is %d, engine's is %d", IndexType, xschemas.IndexType)
+	}
+	if UniqueType != xschemas.UniqueType {
+		t.Errorf("UniqueType is %d, engine's is %d", UniqueType, xschemas.UniqueType)
+	}
+	if IndexType == UniqueType {
+		t.Error("the two index kinds are the same value")
+	}
+	if NewIndex("i", UniqueType).Type != xschemas.UniqueType {
+		t.Error("NewIndex did not carry the unique kind through")
 	}
 }
 
