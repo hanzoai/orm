@@ -32,10 +32,16 @@ var (
 // IsNotFound reports whether err means "no such entity", whichever backend said
 // so.
 //
-// The two sentinels are the same fact told by different layers: orm's own
-// ErrNotFound, and database/sql's ErrNoRows from any store built on a SQL
-// driver. A caller wants to know that the thing is not there; which layer
-// noticed is not its business.
+// THREE sentinels are the same fact told by different layers: orm's own
+// ErrNotFound, the db layer's ErrNoSuchEntity — which is what every backend
+// opened through OpenSQLite/OpenZap actually returns — and database/sql's
+// ErrNoRows from any store built on a SQL driver. A caller wants to know that
+// the thing is not there; which layer noticed is not its business.
+//
+// ErrNoSuchEntity was missing here, which made this predicate answer false for a
+// not-found on the backend everything uses by default. Code written the portable
+// way read "absent" as "failed", and the gap was invisible because each backend
+// was only ever tested against itself.
 //
 // It is a PREDICATE and not a wrapping, deliberately. Making ErrNotFound wrap
 // sql.ErrNoRows would weld orm's public sentinel to database/sql, which is a lie
@@ -47,5 +53,7 @@ var (
 // unchanged after the store moves to orm. Without it, changing what a store
 // returns is a flag day across every caller at once.
 func IsNotFound(err error) bool {
-	return errors.Is(err, ErrNotFound) || errors.Is(err, sql.ErrNoRows)
+	return errors.Is(err, ErrNotFound) ||
+		errors.Is(err, ormdb.ErrNoSuchEntity) ||
+		errors.Is(err, sql.ErrNoRows)
 }
