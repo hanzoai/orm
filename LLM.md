@@ -6,7 +6,11 @@ Generics-based ORM for Go, extracted from `hanzoai/commerce`. Replaces 112 model
 
 **Module**: `github.com/hanzoai/orm`
 **Go version**: 1.26.0
-**Dependencies**: `modernc.org/sqlite` (pure-Go, CGO-free), `kv-go/v9` (Valkey/Redis cache), `zap-proto/http` (ZAP-HTTP transport), `hanzo-ds/go` (analytics warehouse — reached only by `datastore/`)
+**Dependencies**: `hanzoai/sqlite` (the one SQLite driver — it registers both
+`sqlite` and `sqlite3` and picks its own backend by cgo; `db/sqlite.go` says why
+nothing here may name an engine directly), `hanzoai/xorm` (behind `relational/`),
+`kv-go/v9` (Valkey cache), `zap-proto/http` (ZAP transport), `hanzo-ds/go`
+(analytics warehouse — reached only by `datastore/`)
 
 ## Package Layout
 
@@ -20,9 +24,15 @@ orm/
 ├── serialize.go        SerializeFields / DeserializeFields (Foo/Foo_ auto-serialization)
 ├── query.go            ModelQuery[T] — typed query wrapper (Filter, Order, Limit, Get, ById)
 ├── options.go          WithParent, WithInit, WithDefaults, WithStringKey, WithCache
-├── errors.go           ErrNotFound, ErrAlreadyRegistered
+├── errors.go           ErrNotFound, ErrAlreadyRegistered, IsNotFound (the
+│                       portable predicate: it spans orm's ErrNotFound, the db
+│                       layer's ErrNoSuchEntity and sql.ErrNoRows, because which
+│                       layer noticed is not a caller's business)
 ├── db.go               orm.DB, orm.Key, orm.Query, orm.Iterator interfaces
 ├── adapter.go          OpenSQLite, OpenZap, AdaptDB — bridges db backends → orm.DB
+├── conformance_test.go One contract, run against every backend that answers;
+│                       an unreachable one is named, so a green run cannot mean
+│                       "only SQLite was exercised"
 ├── compat.go           LegacyKind, LegacyEntity for commerce migration period
 ├── cache.go            Cache interface, EntityCacheKey, QueryCacheKey, HashQuery
 ├── cache_memory.go     In-memory LRU cache with TTL
@@ -130,8 +140,10 @@ typed and raw paths, with `Namespaces` still deciding when the file is open
 - ZAP dispatches like `Put`: SQL `ON CONFLICT ... RETURNING` (kind-scoped WHERE)
   over `/query`, Valkey `SET NX`, document unique `_id`. Fail-secure — an
   unrecognized reply is an error, never a guessed `created=true`. Wire-complete;
-  the backends do not yet expose a listener, so those paths run under the
-  env-gated live test (`ORM_ZAP_SQL_ADDR`), not unit CI.
+  no backend listens on a developer box, so those paths are exercised by
+  `conformance_test.go` wherever one DOES answer (point `ORM_ZAP_SQL_ADDR`,
+  `ORM_ZAP_DOCDB_ADDR`, `ORM_ZAP_KV_ADDR` or `ORM_ZAP_DATASTORE_ADDR` at it), and
+  a backend nobody reaches is REPORTED by name rather than skipped in silence.
 - Consumers: constraint-based onboarding CAS — create-org-if-absent (two
   same-slug signups can't co-tenant one org) and claim-once rows (one trial per
   identity).
@@ -607,24 +619,24 @@ caller, which turns a trivially mechanical change into a coordinated one.
 Do **not** fix this by wrapping (`fmt.Errorf("...: %w", sql.ErrNoRows)`) — that
 welds orm's public sentinel to `database/sql`, which is a lie on the ZAP and KV
 backends where no SQL exists. The value is "not found", not "SQL said no rows".
-Add the predicate instead:
-
-```go
-// IsNotFound reports whether err means "no such entity", on ANY backend.
-func IsNotFound(err error) bool {
-    return errors.Is(err, ErrNotFound) || errors.Is(err, sql.ErrNoRows)
-}
-```
+The predicate is `IsNotFound` in `errors.go`. **Read it there rather than from a
+copy here** — a copy in this file is a second definition, and the one that used to
+sit at this spot had already drifted: it listed two sentinels when the answer is
+three, which is precisely the bug the conformance suite caught. It spans orm's
+`ErrNotFound`, the db layer's `ErrNoSuchEntity` (what every backend opened through
+`OpenSQLite`/`OpenZap` actually returns) and `sql.ErrNoRows`.
 
 One predicate, backend-independent, greppable, and it lets a store migrate
-bottom-up. This is ~10 lines in orm and it unblocks ~244 call-site edits in two
-repos. Do it first.
+bottom-up.
 
 ### Ranked plan (value / risk)
 
-**0. orm itself — `query.Raw` + `orm.IsNotFound`.** Hours. Near-zero risk. Both
-are additive. Nothing else in this list is safe to start before these two exist,
-because without them every downstream edit is either unauditable or a flag-day.
+**0. orm itself — `query.Raw` + `orm.IsNotFound`.** `IsNotFound` is DONE
+(`errors.go`), and the conformance suite holds every reachable backend to it.
+`query.Raw` is still owed — `grep -rn "func.*Raw(" query.go db/query.go` is empty.
+Near-zero risk, additive. Nothing else in this list is safe to start before
+`query.Raw` exists, because without it a downstream edit is either unauditable or
+a flag-day.
 
 **1. base — flip `hanzoai/dbx` → `orm/query`.** 50 non-test import lines.
 Risk: near zero (identity aliases; a mixed state compiles and behaves
