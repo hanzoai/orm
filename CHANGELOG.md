@@ -5,6 +5,30 @@ All notable changes to `github.com/hanzoai/orm` are documented here.
 The format is loosely [Keep a Changelog](https://keepachangelog.com/) and
 versioning follows [SemVer](https://semver.org/).
 
+## v0.6.31
+
+### Fixed
+
+- **A put makes its row live.** `Delete` leaves a tombstone (`deleted = 1`) rather
+  than removing the row, and the put upsert replaced only `data` — so a write to an
+  id that had once been deleted stored the entity, returned no error, and left the
+  tombstone standing. Every reader filters `deleted = 0`, so the entity was
+  unreadable by `Get`, by any query, and by any count, and writing it again changed
+  nothing: the id was permanently unusable and nothing said so. `Put`, `PutMulti`
+  and the transaction's `Put` each carried their own copy of that statement and each
+  was missing the rule, so they are now ONE `putSQL`. The ZAP SQL backend had the
+  same upsert and now carries the same rule.
+  - The revival is guarded by kind, exactly as `createIfAbsentSQL` already guards
+    it: the id column is a bare primary key, so a row of another kind can hold an
+    id, and reviving that row would publish one kind's tombstone as another kind's
+    entity. Same kind, live; other kind, the tombstone stands.
+  - It is a credential bug wherever the entity is one. In hanzoai/iam a user's API
+    key row is named deterministically, so `revoke` then `mint` wrote onto the
+    tombstone: the mint returned a valid `sk-` and the resolver answered
+    `key_unknown` for it, forever.
+  - `put after delete brings the key back` is now part of the cross-backend
+    conformance contract, so a backend cannot answer this differently.
+
 ## v0.6.17
 
 ### Removed
