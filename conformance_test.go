@@ -92,6 +92,27 @@ var contract = []conformance{
 		}
 	}},
 
+	{"put after delete brings the key back", func(t *testing.T, db DB) {
+		ctx := context.Background()
+		key := db.NewKey("conform", uniqueID("revive"), 0, nil)
+		if _, err := db.Put(ctx, key, &conformDoc{Name: "first", Count: 1}); err != nil {
+			t.Fatalf("put: %v", err)
+		}
+		if err := db.Delete(ctx, key); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		if _, err := db.Put(ctx, key, &conformDoc{Name: "second", Count: 2}); err != nil {
+			t.Fatalf("put after delete: %v", err)
+		}
+		var got conformDoc
+		if err := db.Get(ctx, key, &got); err != nil {
+			t.Fatalf("an entity written after its key was deleted is unreadable: %v — the write reported success and no reader can see it", err)
+		}
+		if got.Name != "second" {
+			t.Fatalf("read %q, want %q", got.Name, "second")
+		}
+	}},
+
 	{"create if absent inserts once and never overwrites", func(t *testing.T, db DB) {
 		ctx := context.Background()
 		key := db.NewKey("conform", uniqueID("cia"), 0, nil)
