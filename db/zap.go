@@ -321,6 +321,11 @@ func (z *ZapDB) sqlGet(ctx context.Context, key Key, dst interface{}) error {
 	return z.unmarshalSQLRows(resp, dst)
 }
 
+// sqlPut writes an entity at its key. A put makes its row LIVE: delete leaves a
+// tombstone here as it does on SQLite, so an upsert that replaced only `data`
+// stored the entity and left every reader — all of which ask for deleted = false —
+// unable to see it. Same rule and same kind guard as sqliteQuery's putSQL, because
+// it is the same table under a different dialect.
 func (z *ZapDB) sqlPut(ctx context.Context, key Key, src interface{}) (Key, error) {
 	data, err := json.Marshal(src)
 	if err != nil {
@@ -330,7 +335,9 @@ func (z *ZapDB) sqlPut(ctx context.Context, key Key, src interface{}) (Key, erro
 	body, _ := json.Marshal(map[string]interface{}{
 		"sql": fmt.Sprintf(`INSERT INTO %s (id, kind, data, created_at, updated_at, deleted)
 			VALUES ($1, $2, $3, $4, $5, false)
-			ON CONFLICT (id) DO UPDATE SET data = $3, updated_at = $5`, z.cfg.Collection),
+			ON CONFLICT (id) DO UPDATE SET data = $3, updated_at = $5,
+				deleted = CASE WHEN %s.kind = $2 THEN false ELSE %s.deleted END`,
+			z.cfg.Collection, z.cfg.Collection, z.cfg.Collection),
 		"args": []interface{}{key.StringID(), key.Kind(), string(data), now, now},
 	})
 	status, _, err := z.call(ctx, "/exec", body)
