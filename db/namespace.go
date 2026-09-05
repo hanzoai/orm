@@ -103,11 +103,35 @@ type Namespaces[T io.Closer] struct {
 	drain chan struct{}
 }
 
-// Namespace names one database, e.g. "org/acme" or "user/123/notes". It is
-// opaque here: a path component and an eviction key, nothing more. What
-// qualifies a namespace is hanzoai/iam's business, and this package never
-// branches on what one means. One tenant owns many namespaces; a namespace is
-// what maps to a single file.
+// Namespace names one database, e.g. "org/acme" or "repo/42/issues". It is
+// opaque here: a path component and an eviction key, nothing more. This package
+// never branches on what one means. One entity owns several namespaces; a
+// namespace is what maps to a single file.
+//
+// # What moves to hanzoai/namespace
+//
+// What a namespace IS becomes github.com/hanzoai/namespace, and this becomes an
+// alias to that package's value type — an alias and not a defined type, so
+// there is one namespace type in the fleet and no conversion at the seam, a
+// conversion being exactly where a name gets to be a raw string again. What
+// stays here is the lifecycle: resolve one to a handle, open, cache, evict.
+//
+// Three things leave with it, all of them consequences of a value that cannot
+// be constructed wrong:
+//
+//   - canonical and its letter rule. Nothing arrives needing canonicalisation,
+//     so acquire drops a path.Clean per request and WithAll de-duplicates on ==
+//     alone.
+//   - the empty name. canonical is the only thing that rejects it today, so
+//     pathFor must take that over: <Dir>/.db is CONTAINED, and one database
+//     silently shared by everyone who forgot to set a namespace is worse than
+//     an escape.
+//   - replicated's per-segment check (urlFor), which re-derives at the object
+//     storage boundary what construction will already have guaranteed.
+//
+// pathFor's containment check stays. PathFor is caller-overridable, and a
+// structural invariant on the RESULT is the check that survives any later
+// loosening of what a name may be.
 type Namespace string
 
 func (ns Namespace) String() string { return string(ns) }
@@ -251,16 +275,20 @@ func (n *Namespaces[T]) now() int64 { return int64(time.Since(n.epoch)) }
 // one file but are three distinct strings. Keyed raw, they would open that file
 // under three entries and replicate one history from three streams. Keyed here,
 // they are one namespace.
+//
+// Case is the alias that matters most, and the only one where the two spellings
+// are two keys over ONE file rather than two files. On a case-insensitive
+// filesystem — every macOS dev box, and half the fleet develops on one —
+// "org/Acme" and "org/acme" open two handles and stream two LTX histories into
+// a single database, and it all works locally. Folding here makes them one
+// namespace on every machine instead of one file on the laptop and two in the
+// cluster.
 func canonical(ns Namespace) (Namespace, error) {
-	c := Namespace(path.Clean(string(ns)))
-	if c == "" || !isLetter(rune(c[0])) {
+	c := Namespace(strings.ToLower(path.Clean(string(ns))))
+	if c == "" || c[0] < 'a' || c[0] > 'z' {
 		return "", fmt.Errorf("db: namespace %q must begin with a letter", ns)
 	}
 	return c, nil
-}
-
-func isLetter(r rune) bool {
-	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z'
 }
 
 // pathFor returns the namespace's file under dir. Containment is structural rather than a
@@ -269,7 +297,7 @@ func isLetter(r rune) bool {
 // result covers separators, dot-segments and encodings alike, which a denylist
 // over the input does not.
 func pathFor(dir string, ns Namespace) (string, error) {
-	p := filepath.Clean(filepath.Join(dir, filepath.FromSlash(string(ns))+".db"))
+	p := filepath.Clean(filepath.Join(dir, filepath.FromSlash(ns.String())+".db"))
 	root := filepath.Clean(dir) + string(filepath.Separator)
 	if !strings.HasPrefix(p, root) {
 		return "", fmt.Errorf("db: namespace %q escapes %s", ns, dir)
@@ -282,7 +310,7 @@ func pathFor(dir string, ns Namespace) (string, error) {
 func OpenNamespace(ns Namespace, path string) (DB, error) {
 	return NewSQLiteDB(&SQLiteDBConfig{
 		Path:      path,
-		Namespace: string(ns),
+		Namespace: ns.String(),
 	})
 }
 
@@ -349,7 +377,7 @@ func (n *Namespaces[T]) WithAll(ctx context.Context, nss []Namespace, fn func(ma
 		return fn(map[Namespace]T{})
 	}
 	if n.cfg.MaxOpen > 0 && len(want) > n.cfg.MaxOpen {
-		return fmt.Errorf("orm/db: %d namespaces at once exceeds MaxOpen %d", len(want), n.cfg.MaxOpen)
+		return fmt.Errorf("db: %d namespaces at once exceeds MaxOpen %d", len(want), n.cfg.MaxOpen)
 	}
 
 	// Acquire concurrently. Every result is recorded, including the failures,
@@ -357,9 +385,9 @@ func (n *Namespaces[T]) WithAll(ctx context.Context, nss []Namespace, fn func(ma
 	// failed -- dropping it on the error path is the leak this type exists to
 	// prevent, and the error path is where leaks are least likely to be noticed.
 	var (
-		wg   sync.WaitGroup
-		mu   sync.Mutex
-		taken = make([]*entry[T], 0, len(want))
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		taken    = make([]*entry[T], 0, len(want))
 		firstErr error
 	)
 	wg.Add(len(want))

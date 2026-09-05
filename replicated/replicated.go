@@ -173,7 +173,7 @@ func (s *store) urlFor(ns db.Namespace) (string, error) {
 	// namespace becomes a key prefix and replicate path.Cleans what it is
 	// given, so a ".." that got this far would resolve into another namespace's
 	// history.
-	segs := strings.Split(string(ns), "/")
+	segs := strings.Split(ns.String(), "/")
 	for _, seg := range segs {
 		if !segment(seg) {
 			return "", fmt.Errorf("replicated: namespace %q is a path, not a name", ns)
