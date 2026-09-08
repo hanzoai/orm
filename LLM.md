@@ -349,14 +349,23 @@ Layering, one job each:
   gone — on the one path the whole "disk is a cache, object storage is the truth"
   model depends on. Nil keeps it silent, and that has to be a decision.
 - **One spelling, and containment checked on the RESULT.** `canonical` cleans
-  the name and requires it to begin with a letter — one rule that rejects the
-  absolute form, the dot-relative form, the empty name, and `a/../../b` at once.
-  Cleaning matters as much as rejecting: `org//acme`, `org/acme/` and `org/acme`
-  are one file under three strings, and keyed raw they would open three entries
-  streaming one history from three replicators. `pathFor` then checks the
-  RESULT — the cleaned join must still sit under `Dir` — which covers
-  separators, dot-segments and encodings alike where a denylist over the input
-  does not.
+  the name, folds its case and requires it to begin with a letter — one rule
+  that rejects the absolute form, the dot-relative form, the empty name, and
+  `a/../../b` at once. Cleaning matters as much as rejecting: `org//acme`,
+  `org/acme/` and `org/acme` are one file under three strings, and keyed raw
+  they would open three entries streaming one history from three replicators.
+  **Case is the alias that corrupts rather than duplicates**: on a
+  case-insensitive filesystem — every macOS dev box — `org/Acme` and `org/acme`
+  are two keys over ONE file, so two handles stream two LTX histories into a
+  single database and it works locally. Folded, they are one namespace on every
+  machine. A file already on disk under a mixed-case name must be renamed to its
+  lowercase form. `pathFor` then checks the RESULT — the cleaned join must still
+  sit under `Dir` — which covers separators, dot-segments and encodings alike
+  where a denylist over the input does not.
+- **What a namespace IS is moving to `hanzoai/namespace`**, leaving the
+  lifecycle here and `Namespace` an alias to that package's value type. The
+  seam — what leaves, what stays, and why `pathFor`'s containment check is in
+  the second group — is documented on the `Namespace` type itself.
 
 Then `commerce/db.Manager` collapses into this, and `hanzoai/git` embedded in
 `hanzoai/cloud` gets it rather than inventing a third version.

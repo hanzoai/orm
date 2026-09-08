@@ -156,14 +156,14 @@ func TestRegistryMaterializesOnLocalMiss(t *testing.T) {
 		},
 	})
 	ctx := context.Background()
-	tn := Namespace("org/fromS3")
+	tn := Namespace("org/from-remote")
 	if err := r.With(ctx, tn, func(DB) error { return nil }); err != nil {
 		t.Fatalf("Do: %v", err)
 	}
 	if atomic.LoadInt64(&called) != 1 {
 		t.Fatal("Materialize must run when the file is not on local disk")
 	}
-	if _, err := os.Stat(filepath.Join(dir, "org", "fromS3.db")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, "org", "from-remote.db")); err != nil {
 		t.Fatalf("materialized file missing: %v", err)
 	}
 	// Second use is a local hit; no restore.

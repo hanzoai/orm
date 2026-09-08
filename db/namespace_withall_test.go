@@ -34,12 +34,14 @@ func TestWithAllHoldsEveryNamespace(t *testing.T) {
 }
 
 // Asking for the same namespace twice must take ONE reference, not two -- a
-// second unreturned reference would pin the handle open forever.
+// second unreturned reference would pin the handle open forever. Two spellings
+// of one name count as twice, which is why the de-duplication runs on the
+// canonical value and not on what the caller wrote.
 func TestWithAllDeduplicates(t *testing.T) {
 	r, opens := fakeRegistry(t, NamespacesConfig[DB]{MaxOpen: 4})
 	defer r.Close()
 
-	err := r.WithAll(context.Background(), []Namespace{"dup", "dup", "dup"}, func(m map[Namespace]DB) error {
+	err := r.WithAll(context.Background(), []Namespace{"dup", "dup", "Dup", "./dup"}, func(m map[Namespace]DB) error {
 		if len(m) != 1 {
 			t.Fatalf("got %d namespaces, want 1", len(m))
 		}
