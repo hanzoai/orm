@@ -1,6 +1,6 @@
 module github.com/hanzoai/orm/replicated
 
-go 1.26.5
+go 1.26.8
 
 // The two modules move together in one repo, so a build from this checkout uses
 // the tree rather than the last published orm — otherwise a change to a seam
