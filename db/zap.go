@@ -771,9 +771,9 @@ func (q *zapQuery) reduce(ctx context.Context, field string) (float64, int, erro
 	ctx, cancel := context.WithTimeout(ctx, q.db.cfg.QueryTimeout)
 	defer cancel()
 
-	expr := fmt.Sprintf("json_extract(data, '$.%s')", ToJSONFieldName(field))
+	expr := jsonField(field)
 	sql, args := q.buildSQL(fmt.Sprintf(
-		"COALESCE(SUM(CAST(%s AS REAL)), 0) as total, COUNT(%s) as n", expr, expr))
+		"COALESCE(SUM((%s)::double precision), 0) as total, COUNT(%s) as n", expr, expr))
 	body, _ := json.Marshal(map[string]any{"sql": sql, "args": args})
 	_, resp, err := q.db.call(ctx, "/query", body)
 	if err != nil {
@@ -792,6 +792,45 @@ func (q *zapQuery) reduce(ctx context.Context, field string) (float64, int, erro
 func (q *zapQuery) Keys(ctx context.Context) ([]Key, error) { return q.GetAll(ctx, nil) }
 func (q *zapQuery) Run(ctx context.Context) Iterator        { return nil }
 
+// jsonField reads one field of a stored document as text.
+//
+// hanzo/sql is PostgreSQL and runs this statement itself, so the statement is
+// written in PostgreSQL: `data->>'name'` for a field of the document,
+// `data#>>'{a,b}'` for one inside another. SQLite's json_extract is not a
+// function there, and a statement that called it came back an error — every
+// filtered or ordered listing against hanzo/sql failed on it.
+//
+// Text, because every argument arrives bound as text: the listener types them
+// TEXT, and a value compares as what it is written as — a string as itself,
+// `true` as "true", a number as its digits.
+//
+// An ORDER BY on this sorts as text. For an ISO-8601 timestamp, the spelling
+// every entity here stores, that is chronological; a numeric field would sort
+// 9 after 10, and wants a projection this query language cannot yet name.
+func jsonField(path string) string {
+	name := ToJSONFieldName(path)
+	if !strings.Contains(name, ".") {
+		return fmt.Sprintf("data->>'%s'", name)
+	}
+	return fmt.Sprintf("data#>>'{%s}'", strings.ReplaceAll(name, ".", ","))
+}
+
+// compare is one condition: a field, an operator, and the argument at idx.
+//
+// A number is compared as a number. As text, '9' is greater than '10', so a
+// range filter on a price or a count would answer with the wrong rows rather
+// than with an error.
+func compare(path, op string, value any, idx int) string {
+	switch value.(type) {
+	case int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64:
+		return fmt.Sprintf("(%s)::double precision %s $%d::double precision", jsonField(path), op, idx)
+	default:
+		return fmt.Sprintf("%s %s $%d", jsonField(path), op, idx)
+	}
+}
+
 func (q *zapQuery) buildSQL(sel string) (string, []any) {
 	table := q.db.cfg.Collection
 	args := []any{q.kind}
@@ -801,9 +840,7 @@ func (q *zapQuery) buildSQL(sel string) (string, []any) {
 	sql.WriteString(fmt.Sprintf("SELECT %s FROM %s WHERE kind = $1 AND deleted = false", sel, table))
 
 	for _, f := range q.filters {
-		jsonField := ToJSONFieldName(f.field)
-		op := NormalizeOp(f.op)
-		sql.WriteString(fmt.Sprintf(" AND json_extract(data, '$.%s') %s $%d", jsonField, op, idx))
+		sql.WriteString(" AND " + compare(f.field, NormalizeOp(f.op), f.value, idx))
 		args = append(args, f.value)
 		idx++
 	}
@@ -815,12 +852,11 @@ func (q *zapQuery) buildSQL(sel string) (string, []any) {
 			if desc {
 				field = field[1:]
 			}
-			jsonField := ToJSONFieldName(field)
 			dir := "ASC"
 			if desc {
 				dir = "DESC"
 			}
-			sql.WriteString(fmt.Sprintf(" ORDER BY json_extract(data, '$.%s') %s", jsonField, dir))
+			sql.WriteString(fmt.Sprintf(" ORDER BY %s %s", jsonField(field), dir))
 		}
 		if q.limit > 0 {
 			sql.WriteString(fmt.Sprintf(" LIMIT %d", q.limit))
