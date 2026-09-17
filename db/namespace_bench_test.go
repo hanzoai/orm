@@ -209,13 +209,13 @@ func BenchmarkRegistryHitRate(b *testing.B) {
 		{"materialize=on", present},
 	} {
 		b.Run(regime.name, func(b *testing.B) {
-			var opens int64
+			var opens atomic.Int64
 			r, err := NewNamespaces(NamespacesConfig[*fakeDB]{
 				Dir:         b.TempDir(),
 				MaxOpen:     maxOpen,
 				Materialize: regime.materialize,
 				Open: func(t Namespace, path string) (*fakeDB, error) {
-					atomic.AddInt64(&opens, 1)
+					opens.Add(1)
 					return &fakeDB{tenant: t}, nil
 				},
 			})
@@ -230,8 +230,8 @@ func BenchmarkRegistryHitRate(b *testing.B) {
 
 			b.ResetTimer()
 			for n := 0; n < b.N; n++ {
-				atomic.StoreInt64(&opens, 0)
-				for i := 0; i < ops; i++ {
+				opens.Store(0)
+				for range ops {
 					var id uint64
 					if next()%10 < 9 {
 						id = next() % hot
@@ -240,7 +240,7 @@ func BenchmarkRegistryHitRate(b *testing.B) {
 					}
 					_ = r.With(ctx, Namespace("org/"+fmt.Sprint(id)), func(*fakeDB) error { return nil })
 				}
-				b.ReportMetric(float64(atomic.LoadInt64(&opens))*100/float64(ops), "miss%")
+				b.ReportMetric(float64(opens.Load())*100/float64(ops), "miss%")
 			}
 		})
 	}

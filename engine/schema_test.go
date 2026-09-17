@@ -29,7 +29,7 @@ type TestApp struct {
 
 func TestParseTableMeta_Basic(t *testing.T) {
 	mapper := names.SnakeMapper{}
-	meta := parseTableMeta(reflect.TypeOf(TestUser{}), mapper)
+	meta := parseTableMeta(reflect.TypeFor[TestUser](), mapper)
 
 	if meta.Name != "test_user" {
 		t.Errorf("table name: got %q, want %q", meta.Name, "test_user")
@@ -48,7 +48,7 @@ func TestParseTableMeta_Basic(t *testing.T) {
 
 func TestParseTableMeta_CompositePK(t *testing.T) {
 	mapper := names.SnakeMapper{}
-	meta := parseTableMeta(reflect.TypeOf(TestApp{}), mapper)
+	meta := parseTableMeta(reflect.TypeFor[TestApp](), mapper)
 
 	if len(meta.PrimaryKey) != 2 {
 		t.Fatalf("primary key count: got %d, want 2", len(meta.PrimaryKey))
@@ -60,7 +60,7 @@ func TestParseTableMeta_CompositePK(t *testing.T) {
 
 func TestParseTableMeta_JSONColumn(t *testing.T) {
 	mapper := names.SnakeMapper{}
-	meta := parseTableMeta(reflect.TypeOf(TestApp{}), mapper)
+	meta := parseTableMeta(reflect.TypeFor[TestApp](), mapper)
 
 	col := meta.Column("grant_types")
 	if col == nil {
@@ -141,7 +141,7 @@ func TestParseXormTag(t *testing.T) {
 
 func TestGenerateCreateTableSQL_Postgres(t *testing.T) {
 	mapper := names.SnakeMapper{}
-	meta := parseTableMeta(reflect.TypeOf(TestUser{}), mapper)
+	meta := parseTableMeta(reflect.TypeFor[TestUser](), mapper)
 	meta.PrimaryKey = []string{"id"}
 
 	ddl := generateCreateTableSQL(meta, "postgres")
@@ -171,7 +171,7 @@ func TestGenerateCreateTableSQL_Postgres(t *testing.T) {
 
 func TestGenerateCreateTableSQL_CompositePK(t *testing.T) {
 	mapper := names.SnakeMapper{}
-	meta := parseTableMeta(reflect.TypeOf(TestApp{}), mapper)
+	meta := parseTableMeta(reflect.TypeFor[TestApp](), mapper)
 
 	ddl := generateCreateTableSQL(meta, "postgres")
 
@@ -231,16 +231,16 @@ func TestGoTypeToSQL(t *testing.T) {
 		typ  reflect.Type
 		want string
 	}{
-		{reflect.TypeOf(""), "VARCHAR(255)"},
-		{reflect.TypeOf(0), "INTEGER"},
-		{reflect.TypeOf(int64(0)), "BIGINT"},
+		{reflect.TypeFor[string](), "VARCHAR(255)"},
+		{reflect.TypeFor[int](), "INTEGER"},
+		{reflect.TypeFor[int64](), "BIGINT"},
 		{reflect.TypeOf(true), "BOOLEAN"},
-		{reflect.TypeOf(0.0), "DOUBLE PRECISION"},
-		{reflect.TypeOf(float32(0)), "REAL"},
-		{reflect.TypeOf(time.Time{}), "TIMESTAMP WITH TIME ZONE"},
-		{reflect.TypeOf([]byte{}), "BYTEA"},
-		{reflect.TypeOf([]string{}), "TEXT"},
-		{reflect.TypeOf(map[string]string{}), "TEXT"},
+		{reflect.TypeFor[float64](), "DOUBLE PRECISION"},
+		{reflect.TypeFor[float32](), "REAL"},
+		{reflect.TypeFor[time.Time](), "TIMESTAMP WITH TIME ZONE"},
+		{reflect.TypeFor[[]byte](), "BYTEA"},
+		{reflect.TypeFor[[]string](), "TEXT"},
+		{reflect.TypeFor[map[string]string](), "TEXT"},
 	}
 
 	for _, tt := range tests {

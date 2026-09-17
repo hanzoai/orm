@@ -306,7 +306,7 @@ func (db *SQLiteDB) Close() error {
 	return nil
 }
 
-func (db *SQLiteDB) Get(ctx context.Context, key Key, dst interface{}) error {
+func (db *SQLiteDB) Get(ctx context.Context, key Key, dst any) error {
 	if key == nil {
 		return ErrInvalidKey
 	}
@@ -326,7 +326,7 @@ func (db *SQLiteDB) Get(ctx context.Context, key Key, dst interface{}) error {
 	return json.Unmarshal(data, dst)
 }
 
-func (db *SQLiteDB) Put(ctx context.Context, key Key, src interface{}) (Key, error) {
+func (db *SQLiteDB) Put(ctx context.Context, key Key, src any) (Key, error) {
 	if key == nil {
 		return nil, ErrInvalidKey
 	}
@@ -401,7 +401,7 @@ const createIfAbsentSQL = `
 // rowQuerier is the read surface shared by *sql.DB and *sql.Tx, used to
 // disambiguate a CreateIfAbsent that wrote no row.
 type rowQuerier interface {
-	QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
 // checkKindMatch resolves a CreateIfAbsent that wrote no row. Existence is
@@ -450,7 +450,7 @@ func createIfAbsentRow(row *sql.Row) (bool, error) {
 // empty-id create across all kinds would collide on the single id="" row. The
 // empty check closes that; Encode() after a false Incomplete() is non-mutating
 // in the empty case (it only allocates an id when the incomplete flag is set).
-func createIfAbsentArgs(key Key, src interface{}) (string, []interface{}, error) {
+func createIfAbsentArgs(key Key, src any) (string, []any, error) {
 	if key == nil || key.Incomplete() {
 		return "", nil, ErrInvalidKey
 	}
@@ -467,10 +467,10 @@ func createIfAbsentArgs(key Key, src interface{}) (string, []interface{}, error)
 		pid := p.Encode()
 		parentID = &pid
 	}
-	return id, []interface{}{id, key.Kind(), parentID, data}, nil
+	return id, []any{id, key.Kind(), parentID, data}, nil
 }
 
-func (db *SQLiteDB) CreateIfAbsent(ctx context.Context, key Key, src interface{}) (bool, error) {
+func (db *SQLiteDB) CreateIfAbsent(ctx context.Context, key Key, src any) (bool, error) {
 	id, args, err := createIfAbsentArgs(key, src)
 	if err != nil {
 		return false, err
@@ -503,13 +503,13 @@ func (db *SQLiteDB) Delete(ctx context.Context, key Key) error {
 	return err
 }
 
-func (db *SQLiteDB) GetMulti(ctx context.Context, keys []Key, dst interface{}) error {
+func (db *SQLiteDB) GetMulti(ctx context.Context, keys []Key, dst any) error {
 	if len(keys) == 0 {
 		return nil
 	}
 
 	placeholders := make([]string, len(keys))
-	args := make([]interface{}, len(keys)*2)
+	args := make([]any, len(keys)*2)
 	for i, k := range keys {
 		placeholders[i] = "(?, ?)"
 		args[i*2] = k.Encode()
@@ -538,7 +538,7 @@ func (db *SQLiteDB) GetMulti(ctx context.Context, keys []Key, dst interface{}) e
 	}
 
 	dstVal := reflect.ValueOf(dst)
-	if dstVal.Kind() != reflect.Ptr || dstVal.Elem().Kind() != reflect.Slice {
+	if dstVal.Kind() != reflect.Pointer || dstVal.Elem().Kind() != reflect.Slice {
 		return errors.New("db: dst must be a pointer to a slice")
 	}
 
@@ -562,7 +562,7 @@ func (db *SQLiteDB) GetMulti(ctx context.Context, keys []Key, dst interface{}) e
 	return nil
 }
 
-func (db *SQLiteDB) PutMulti(ctx context.Context, keys []Key, src interface{}) ([]Key, error) {
+func (db *SQLiteDB) PutMulti(ctx context.Context, keys []Key, src any) ([]Key, error) {
 	if len(keys) == 0 {
 		return keys, nil
 	}
@@ -670,7 +670,7 @@ func (db *SQLiteDB) VectorSearch(ctx context.Context, opts *VectorSearchOptions)
 	}
 
 	query := `SELECT id, distance, metadata FROM _vectors WHERE embedding MATCH ?`
-	args := []interface{}{string(vectorJSON)}
+	args := []any{string(vectorJSON)}
 
 	if opts.Kind != "" {
 		query += " AND kind = ?"
@@ -710,7 +710,7 @@ func (db *SQLiteDB) VectorSearch(ctx context.Context, opts *VectorSearchOptions)
 	return results, rows.Err()
 }
 
-func (db *SQLiteDB) PutVector(ctx context.Context, kind string, id string, vector []float32, metadata map[string]interface{}) error {
+func (db *SQLiteDB) PutVector(ctx context.Context, kind string, id string, vector []float32, metadata map[string]any) error {
 	vectorJSON, err := json.Marshal(vector)
 	if err != nil {
 		return err
@@ -756,7 +756,7 @@ func (db *SQLiteDB) NewIncompleteKey(kind string, parent Key) Key {
 
 func (db *SQLiteDB) AllocateIDs(kind string, parent Key, n int) ([]Key, error) {
 	keys := make([]Key, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		keys[i] = &sqliteKey{
 			kind:      kind,
 			stringID:  newStringID(),
@@ -841,12 +841,12 @@ type sqliteQuery struct {
 	endCursor   *SimpleCursor
 }
 
-func (q *sqliteQuery) Filter(filterStr string, value interface{}) Query {
+func (q *sqliteQuery) Filter(filterStr string, value any) Query {
 	field, op := ParseFilterString(filterStr)
 	return q.FilterField(field, op, value)
 }
 
-func (q *sqliteQuery) FilterField(fieldPath string, op string, value interface{}) Query {
+func (q *sqliteQuery) FilterField(fieldPath string, op string, value any) Query {
 	newQ := q.clone()
 	newQ.filters = append(newQ.filters, QueryFilter{
 		Field: fieldPath, Op: NormalizeOp(op), Value: value,
@@ -856,9 +856,9 @@ func (q *sqliteQuery) FilterField(fieldPath string, op string, value interface{}
 
 func (q *sqliteQuery) Order(fieldPath string) Query {
 	newQ := q.clone()
-	if strings.HasPrefix(fieldPath, "-") {
+	if after, ok := strings.CutPrefix(fieldPath, "-"); ok {
 		newQ.orders = append(newQ.orders, QueryOrder{
-			Field: strings.TrimPrefix(fieldPath, "-"), Desc: true,
+			Field: after, Desc: true,
 		})
 	} else {
 		newQ.orders = append(newQ.orders, QueryOrder{Field: fieldPath})
@@ -918,7 +918,7 @@ func (q *sqliteQuery) End(cursor Cursor) Query {
 	return newQ
 }
 
-func (q *sqliteQuery) GetAll(ctx context.Context, dst interface{}) ([]Key, error) {
+func (q *sqliteQuery) GetAll(ctx context.Context, dst any) ([]Key, error) {
 	query, args := q.buildSQL()
 
 	var rows *sql.Rows
@@ -934,13 +934,13 @@ func (q *sqliteQuery) GetAll(ctx context.Context, dst interface{}) ([]Key, error
 	defer rows.Close()
 
 	dstVal := reflect.ValueOf(dst)
-	if dstVal.Kind() != reflect.Ptr || dstVal.Elem().Kind() != reflect.Slice {
+	if dstVal.Kind() != reflect.Pointer || dstVal.Elem().Kind() != reflect.Slice {
 		return nil, errors.New("db: dst must be a pointer to a slice")
 	}
 
 	sliceVal := dstVal.Elem()
 	elemType := sliceVal.Type().Elem()
-	isPointer := elemType.Kind() == reflect.Ptr
+	isPointer := elemType.Kind() == reflect.Pointer
 	if isPointer {
 		elemType = elemType.Elem()
 	}
@@ -973,7 +973,7 @@ func (q *sqliteQuery) GetAll(ctx context.Context, dst interface{}) ([]Key, error
 	return keys, rows.Err()
 }
 
-func (q *sqliteQuery) First(ctx context.Context, dst interface{}) (Key, error) {
+func (q *sqliteQuery) First(ctx context.Context, dst any) (Key, error) {
 	limitedQ := q.Limit(1).(*sqliteQuery)
 	query, args := limitedQ.buildSQL()
 
@@ -1005,7 +1005,7 @@ func (q *sqliteQuery) First(ctx context.Context, dst interface{}) (Key, error) {
 func (q *sqliteQuery) Count(ctx context.Context) (int, error) {
 	where, args := q.buildWhere()
 	query := fmt.Sprintf(`SELECT COUNT(*) FROM _entities WHERE kind = ? AND deleted = 0%s`, where)
-	args = append([]interface{}{q.kind}, args...)
+	args = append([]any{q.kind}, args...)
 
 	var row *sql.Row
 	if q.tx != nil {
@@ -1046,7 +1046,7 @@ func (q *sqliteQuery) reduce(ctx context.Context, field string) (float64, int, e
 	query := fmt.Sprintf(
 		`SELECT COALESCE(SUM(CAST(%s AS REAL)), 0), COUNT(%s) FROM _entities WHERE kind = ? AND deleted = 0%s`,
 		expr, expr, where)
-	args = append([]interface{}{q.kind}, args...)
+	args = append([]any{q.kind}, args...)
 
 	var row *sql.Row
 	if q.tx != nil {
@@ -1065,7 +1065,7 @@ func (q *sqliteQuery) reduce(ctx context.Context, field string) (float64, int, e
 func (q *sqliteQuery) Keys(ctx context.Context) ([]Key, error) {
 	where, args := q.buildWhere()
 	query := fmt.Sprintf(`SELECT id FROM _entities WHERE kind = ? AND deleted = 0%s`, where)
-	args = append([]interface{}{q.kind}, args...)
+	args = append([]any{q.kind}, args...)
 	query += q.buildOrderBy()
 	query += q.buildLimitOffset()
 
@@ -1110,7 +1110,7 @@ func (q *sqliteQuery) Run(ctx context.Context) Iterator {
 	}
 }
 
-func (q *sqliteQuery) buildSQL() (string, []interface{}) {
+func (q *sqliteQuery) buildSQL() (string, []any) {
 	where, args := q.buildWhere()
 
 	selectClause := "id, data"
@@ -1119,16 +1119,16 @@ func (q *sqliteQuery) buildSQL() (string, []interface{}) {
 	}
 
 	query := fmt.Sprintf(`SELECT %s FROM _entities WHERE kind = ? AND deleted = 0%s`, selectClause, where)
-	args = append([]interface{}{q.kind}, args...)
+	args = append([]any{q.kind}, args...)
 	query += q.buildOrderBy()
 	query += q.buildLimitOffset()
 
 	return query, args
 }
 
-func (q *sqliteQuery) buildWhere() (string, []interface{}) {
+func (q *sqliteQuery) buildWhere() (string, []any) {
 	var conditions []string
-	var args []interface{}
+	var args []any
 
 	if q.ancestor != nil {
 		conditions = append(conditions, "parent_id = ?")
@@ -1220,7 +1220,7 @@ type sqliteIterator struct {
 	offset    int
 }
 
-func (it *sqliteIterator) Next(dst interface{}) (Key, error) {
+func (it *sqliteIterator) Next(dst any) (Key, error) {
 	if it.err != nil {
 		return nil, it.err
 	}
@@ -1273,7 +1273,7 @@ type sqliteTransaction struct {
 	tx *sql.Tx
 }
 
-func (t *sqliteTransaction) Get(key Key, dst interface{}) error {
+func (t *sqliteTransaction) Get(key Key, dst any) error {
 	row := t.tx.QueryRow(
 		`SELECT data FROM _entities WHERE id = ? AND kind = ? AND deleted = 0`,
 		key.Encode(), key.Kind())
@@ -1293,11 +1293,11 @@ func (t *sqliteTransaction) Get(key Key, dst interface{}) error {
 // via db.writeMu (see SQLiteDB.RunInTransaction), so a simple Get under an
 // active write-tx is effectively row-exclusive. Concurrent txs on the same
 // *SQLiteDB cannot overlap at all.
-func (t *sqliteTransaction) GetForUpdate(key Key, dst interface{}) error {
+func (t *sqliteTransaction) GetForUpdate(key Key, dst any) error {
 	return t.Get(key, dst)
 }
 
-func (t *sqliteTransaction) Put(key Key, src interface{}) (Key, error) {
+func (t *sqliteTransaction) Put(key Key, src any) (Key, error) {
 	data, err := json.Marshal(src)
 	if err != nil {
 		return nil, err
@@ -1314,7 +1314,7 @@ func (t *sqliteTransaction) Put(key Key, src interface{}) (Key, error) {
 	return key, err
 }
 
-func (t *sqliteTransaction) CreateIfAbsent(key Key, src interface{}) (bool, error) {
+func (t *sqliteTransaction) CreateIfAbsent(key Key, src any) (bool, error) {
 	id, args, err := createIfAbsentArgs(key, src)
 	if err != nil {
 		return false, err

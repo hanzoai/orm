@@ -31,7 +31,7 @@ func TestMoveCarriesEveryEntity(t *testing.T) {
 	src, dst := openAt(t, "src"), openAt(t, "dst")
 
 	const n = 25
-	for i := 0; i < n; i++ {
+	for i := range n {
 		k := src.NewKey("mover", fmt.Sprintf("id-%02d", i), 0, nil)
 		if _, err := src.Put(ctx, k, &moveDoc{Name: fmt.Sprintf("row-%02d", i), Count: i}); err != nil {
 			t.Fatalf("seed %d: %v", i, err)
@@ -47,7 +47,7 @@ func TestMoveCarriesEveryEntity(t *testing.T) {
 	}
 
 	// Every entity is readable on the destination, with its content intact.
-	for i := 0; i < n; i++ {
+	for i := range n {
 		var got moveDoc
 		if err := dst.Get(ctx, dst.NewKey("mover", fmt.Sprintf("id-%02d", i), 0, nil), &got); err != nil {
 			t.Fatalf("read %d on destination: %v", i, err)
@@ -63,7 +63,7 @@ func TestMoveCarriesEveryEntity(t *testing.T) {
 func TestMoveIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	src, dst := openAt(t, "src"), openAt(t, "dst")
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		k := src.NewKey("mover", fmt.Sprintf("id-%d", i), 0, nil)
 		if _, err := src.Put(ctx, k, &moveDoc{Name: "x", Count: i}); err != nil {
 			t.Fatal(err)

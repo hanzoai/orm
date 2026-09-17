@@ -85,7 +85,7 @@ func TestCreateIfAbsent_AutocommitContract(t *testing.T) {
 	results := make([]bool, n)
 	errs := make([]error, n)
 	start := make(chan struct{})
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -103,7 +103,7 @@ func TestCreateIfAbsent_AutocommitContract(t *testing.T) {
 	wg.Wait()
 
 	winners, winner := 0, -1
-	for i := 0; i < n; i++ {
+	for i := range n {
 		if errs[i] != nil {
 			t.Fatalf("racer %d: %v", i, errs[i])
 		}

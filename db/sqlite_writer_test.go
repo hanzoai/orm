@@ -54,11 +54,9 @@ func TestConcurrentProcessesLoseNoWrite(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make([]error, writers)
 	for i := range writers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			errs[i] = spawnIncrementer(dbPath, each, start)
-		}()
+		})
 	}
 	wg.Wait()
 	for i, err := range errs {
@@ -116,11 +114,9 @@ func TestDeferredTxDropsWrites(t *testing.T) {
 	var wg sync.WaitGroup
 	failures := make([]error, writers)
 	for i := range writers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			failures[i] = spawnIncrementerDeferred(dbPath, each, start)
-		}()
+		})
 	}
 	wg.Wait()
 

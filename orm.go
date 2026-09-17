@@ -22,7 +22,7 @@ func New[T any](db DB) *T {
 	// Apply custom init
 	var zero T
 	typ := reflect.TypeOf(zero)
-	if typ.Kind() == reflect.Ptr {
+	if typ.Kind() == reflect.Pointer {
 		typ = typ.Elem()
 	}
 	if meta, ok := LookupType(typ); ok && meta.InitFn != nil {
@@ -147,7 +147,7 @@ func TypedQuery[T any](db DB) *ModelQuery[T] {
 func Kind[T any]() string {
 	var zero T
 	typ := reflect.TypeOf(zero)
-	if typ.Kind() == reflect.Ptr {
+	if typ.Kind() == reflect.Pointer {
 		typ = typ.Elem()
 	}
 	meta, ok := LookupType(typ)
@@ -173,8 +173,7 @@ func getModel[T any](entity *T) *Model[T] {
 	}
 
 	// Search all fields
-	for i := 0; i < val.NumField(); i++ {
-		f := val.Field(i)
+	for _, f := range val.Fields() {
 		if f.CanAddr() {
 			if m, ok := f.Addr().Interface().(*Model[T]); ok {
 				return m

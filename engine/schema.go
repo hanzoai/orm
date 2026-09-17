@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -44,7 +45,7 @@ func (t *TableMeta) Column(name string) *ColumnMeta {
 
 // parseTableMeta extracts table metadata from a struct type.
 func parseTableMeta(typ reflect.Type, mapper names.Mapper) *TableMeta {
-	if typ.Kind() == reflect.Ptr {
+	if typ.Kind() == reflect.Pointer {
 		typ = typ.Elem()
 	}
 
@@ -71,8 +72,7 @@ func parseTableMeta(typ reflect.Type, mapper names.Mapper) *TableMeta {
 
 // parseFields recursively extracts column metadata from struct fields.
 func parseFields(typ reflect.Type, meta *TableMeta, mapper names.Mapper, prefix string) {
-	for i := 0; i < typ.NumField(); i++ {
-		field := typ.Field(i)
+	for field := range typ.Fields() {
 
 		// Skip unexported
 		if !field.IsExported() {
@@ -82,10 +82,10 @@ func parseFields(typ reflect.Type, meta *TableMeta, mapper names.Mapper, prefix 
 		// Handle embedded structs (flatten)
 		if field.Anonymous {
 			ft := field.Type
-			if ft.Kind() == reflect.Ptr {
+			if ft.Kind() == reflect.Pointer {
 				ft = ft.Elem()
 			}
-			if ft.Kind() == reflect.Struct && ft != reflect.TypeOf(time.Time{}) {
+			if ft.Kind() == reflect.Struct && ft != reflect.TypeFor[time.Time]() {
 				parseFields(ft, meta, mapper, prefix)
 				continue
 			}
@@ -130,7 +130,7 @@ func parseFields(typ reflect.Type, meta *TableMeta, mapper names.Mapper, prefix 
 			col.IsJSON = true
 			col.SQLType = "TEXT"
 		case reflect.Struct:
-			if field.Type != reflect.TypeOf(time.Time{}) {
+			if field.Type != reflect.TypeFor[time.Time]() {
 				col.IsJSON = true
 				col.SQLType = "TEXT"
 			}
@@ -160,9 +160,9 @@ func parseFields(typ reflect.Type, meta *TableMeta, mapper names.Mapper, prefix 
 
 // parseXormTag parses an xorm struct tag like `xorm:"varchar(100) notnull pk"`.
 func parseXormTag(tag string, col *ColumnMeta) {
-	parts := strings.Fields(tag)
+	parts := strings.FieldsSeq(tag)
 
-	for _, p := range parts {
+	for p := range parts {
 		lower := strings.ToLower(p)
 
 		switch {
@@ -226,19 +226,14 @@ func isTypeName(s string) bool {
 		"bytea",
 	}
 
-	base := strings.Split(s, "(")[0]
-	for _, t := range types {
-		if base == t {
-			return true
-		}
-	}
-	return false
+	base, _, _ := strings.Cut(s, "(")
+	return slices.Contains(types, base)
 }
 
 // mapXormType maps xorm type names to PostgreSQL types.
 func mapXormType(xormType string) string {
 	lower := strings.ToLower(xormType)
-	base := strings.Split(lower, "(")[0]
+	base, _, _ := strings.Cut(lower, "(")
 
 	switch base {
 	case "varchar", "char":
@@ -286,12 +281,12 @@ func mapXormType(xormType string) string {
 
 // goTypeToSQL maps Go types to SQL types.
 func goTypeToSQL(t reflect.Type, driver string) string {
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 
 	// Handle time.Time
-	if t == reflect.TypeOf(time.Time{}) {
+	if t == reflect.TypeFor[time.Time]() {
 		if driver == "sqlite" {
 			return "DATETIME"
 		}

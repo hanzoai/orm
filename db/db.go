@@ -64,8 +64,8 @@ type SQLiteConfig struct {
 // DB is the main database interface for entity storage.
 type DB interface {
 	// Core operations
-	Get(ctx context.Context, key Key, dst interface{}) error
-	Put(ctx context.Context, key Key, src interface{}) (Key, error)
+	Get(ctx context.Context, key Key, dst any) error
+	Put(ctx context.Context, key Key, src any) (Key, error)
 
 	// CreateIfAbsent conditionally inserts src under key with first-writer-wins
 	// semantics. It returns created=true iff this call inserted the row (key was
@@ -92,13 +92,13 @@ type DB interface {
 	// the SQL backend applies INSERT ... ON CONFLICT at the row — so for N
 	// concurrent callers on the same absent key exactly one observes created=true.
 	// key must be complete with a non-empty id; otherwise ErrInvalidKey.
-	CreateIfAbsent(ctx context.Context, key Key, src interface{}) (created bool, err error)
+	CreateIfAbsent(ctx context.Context, key Key, src any) (created bool, err error)
 
 	Delete(ctx context.Context, key Key) error
 
 	// Batch operations
-	GetMulti(ctx context.Context, keys []Key, dst interface{}) error
-	PutMulti(ctx context.Context, keys []Key, src interface{}) ([]Key, error)
+	GetMulti(ctx context.Context, keys []Key, dst any) error
+	PutMulti(ctx context.Context, keys []Key, src any) ([]Key, error)
 	DeleteMulti(ctx context.Context, keys []Key) error
 
 	// Query
@@ -106,7 +106,7 @@ type DB interface {
 
 	// Vector search
 	VectorSearch(ctx context.Context, opts *VectorSearchOptions) ([]VectorResult, error)
-	PutVector(ctx context.Context, kind string, id string, vector []float32, metadata map[string]interface{}) error
+	PutVector(ctx context.Context, kind string, id string, vector []float32, metadata map[string]any) error
 
 	// Key management
 	NewKey(kind string, stringID string, intID int64, parent Key) Key
@@ -143,25 +143,25 @@ type VectorSearchOptions struct {
 	Vector   []float32
 	Limit    int
 	MinScore float32
-	Filters  map[string]interface{}
+	Filters  map[string]any
 }
 
 // VectorResult represents a vector search result.
 type VectorResult struct {
 	ID       string
 	Score    float32
-	Metadata map[string]interface{}
+	Metadata map[string]any
 }
 
 // Transaction represents a database transaction.
 type Transaction interface {
-	Get(key Key, dst interface{}) error
-	Put(key Key, src interface{}) (Key, error)
+	Get(key Key, dst any) error
+	Put(key Key, src any) (Key, error)
 
 	// CreateIfAbsent is the transaction-scoped conditional insert: the same
 	// first-writer-wins semantics as DB.CreateIfAbsent, participating in the
 	// enclosing transaction.
-	CreateIfAbsent(key Key, src interface{}) (created bool, err error)
+	CreateIfAbsent(key Key, src any) (created bool, err error)
 
 	Delete(key Key) error
 	Query(kind string) Query
@@ -173,7 +173,7 @@ type Transaction interface {
 	// alone is insufficient because ON CONFLICT DO UPDATE can miss the
 	// rw-dependency cycle. SQLite honors this via the write mutex it already
 	// holds; drivers without row-locking treat it as a regular Get.
-	GetForUpdate(key Key, dst interface{}) error
+	GetForUpdate(key Key, dst any) error
 }
 
 // TransactionOptions configures transaction behavior.
@@ -208,8 +208,8 @@ type Key interface {
 
 // Query provides a fluent interface for querying entities.
 type Query interface {
-	Filter(filterStr string, value interface{}) Query
-	FilterField(fieldPath string, op string, value interface{}) Query
+	Filter(filterStr string, value any) Query
+	FilterField(fieldPath string, op string, value any) Query
 	Order(fieldPath string) Query
 	OrderDesc(fieldPath string) Query
 	Limit(limit int) Query
@@ -217,8 +217,8 @@ type Query interface {
 	Project(fieldNames ...string) Query
 	Distinct() Query
 	Ancestor(ancestor Key) Query
-	GetAll(ctx context.Context, dst interface{}) ([]Key, error)
-	First(ctx context.Context, dst interface{}) (Key, error)
+	GetAll(ctx context.Context, dst any) ([]Key, error)
+	First(ctx context.Context, dst any) (Key, error)
 	Count(ctx context.Context) (int, error)
 
 	// Sum and Avg reduce ONE numeric field over the rows the filters select.
@@ -247,7 +247,7 @@ type Query interface {
 
 // Iterator allows iterating over query results.
 type Iterator interface {
-	Next(dst interface{}) (Key, error)
+	Next(dst any) (Key, error)
 	Cursor() (Cursor, error)
 }
 

@@ -8,7 +8,7 @@ import (
 
 // IsPtrSlice returns true if v is a pointer to a slice.
 func IsPtrSlice(v reflect.Value) bool {
-	if v.Kind() != reflect.Ptr {
+	if v.Kind() != reflect.Pointer {
 		return false
 	}
 	v = v.Elem()
@@ -18,11 +18,11 @@ func IsPtrSlice(v reflect.Value) bool {
 // IsSliceOfPtr returns true if the slice contains pointers.
 func IsSliceOfPtr(slice reflect.Value) bool {
 	v := slice.Index(0)
-	return v.Type().Kind() == reflect.Ptr
+	return v.Type().Kind() == reflect.Pointer
 }
 
 // SetField sets a field on an addressable struct by name.
-func SetField(ps reflect.Value, name string, value interface{}) error {
+func SetField(ps reflect.Value, name string, value any) error {
 	s := ps.Elem()
 	f := s.FieldByName(name)
 	if !f.IsValid() || !f.CanSet() {
@@ -33,11 +33,11 @@ func SetField(ps reflect.Value, name string, value interface{}) error {
 }
 
 // FieldNames returns all field names of a struct.
-func FieldNames(s interface{}) []string {
+func FieldNames(s any) []string {
 	typ := reflect.ValueOf(s).Type()
 	num := typ.NumField()
 	names := make([]string, num)
-	for i := 0; i < num; i++ {
+	for i := range num {
 		names[i] = typ.Field(i).Name
 	}
 	return names
@@ -56,7 +56,7 @@ func IsZero(v reflect.Value) bool {
 		return v.Uint() == 0
 	case reflect.Float32, reflect.Float64:
 		return v.Float() == 0
-	case reflect.Interface, reflect.Ptr:
+	case reflect.Interface, reflect.Pointer:
 		return v.IsNil()
 	}
 	return false

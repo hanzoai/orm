@@ -130,7 +130,7 @@ func TestSQLiteDBQueryLimit(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		key := db.NewKey("item", newStringID(), 0, nil)
 		db.Put(ctx, key, &testEntity{Name: "item", Age: i})
 	}
@@ -150,7 +150,7 @@ func TestSQLiteDBQueryCount(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		key := db.NewKey("counter", newStringID(), 0, nil)
 		db.Put(ctx, key, &testEntity{Name: "item", Age: i})
 	}

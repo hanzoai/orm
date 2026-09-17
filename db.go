@@ -15,10 +15,10 @@ import (
 // thin adapter.
 type DB interface {
 	// Get loads the entity identified by key into dst.
-	Get(ctx context.Context, key Key, dst interface{}) error
+	Get(ctx context.Context, key Key, dst any) error
 
 	// Put persists src under key, returning the (possibly updated) key.
-	Put(ctx context.Context, key Key, src interface{}) (Key, error)
+	Put(ctx context.Context, key Key, src any) (Key, error)
 
 	// CreateIfAbsent conditionally inserts src under key with first-writer-wins
 	// semantics. It returns created=true iff this call inserted the row (key was
@@ -38,7 +38,7 @@ type DB interface {
 	// It is atomic on its own — a single conditional insert, no enclosing
 	// transaction required — so it is race-safe under both the serialized-writer
 	// (SQLite) and autocommit (ZAP) storage contracts.
-	CreateIfAbsent(ctx context.Context, key Key, src interface{}) (created bool, err error)
+	CreateIfAbsent(ctx context.Context, key Key, src any) (created bool, err error)
 
 	// Delete removes the entity identified by key.
 	Delete(ctx context.Context, key Key) error
@@ -71,7 +71,7 @@ type DB interface {
 	// path already holds the reserved lock across the entire tx, so
 	// GetForUpdate becomes a regular Get that is strictly serialized against
 	// other writers. Calling GetForUpdate OUTSIDE a transaction is an error.
-	GetForUpdate(ctx context.Context, key Key, dst interface{}) error
+	GetForUpdate(ctx context.Context, key Key, dst any) error
 
 	// Close releases resources.
 	Close() error
@@ -118,7 +118,7 @@ type Key interface {
 
 // Query is a fluent query builder.
 type Query interface {
-	Filter(filterStr string, value interface{}) Query
+	Filter(filterStr string, value any) Query
 	Order(fieldPath string) Query
 	Limit(limit int) Query
 	Offset(offset int) Query
@@ -127,16 +127,16 @@ type Query interface {
 
 	// GetAll executes the query, populating dst (pointer to slice).
 	// Returns the matching keys.
-	GetAll(ctx context.Context, dst interface{}) ([]Key, error)
+	GetAll(ctx context.Context, dst any) ([]Key, error)
 
 	// First returns the first matching entity.
-	First(dst interface{}) (Key, bool, error)
+	First(dst any) (Key, bool, error)
 
 	// Count returns the number of matching entities.
 	Count(ctx context.Context) (int, error)
 
 	// ById finds an entity by its encoded ID.
-	ById(id string, dst interface{}) (Key, bool, error)
+	ById(id string, dst any) (Key, bool, error)
 
 	// IdExists checks whether the given ID exists.
 	IdExists(id string) (Key, bool, error)
@@ -147,5 +147,5 @@ type Query interface {
 
 // Iterator iterates over query results.
 type Iterator interface {
-	Next(dst interface{}) (Key, error)
+	Next(dst any) (Key, error)
 }

@@ -95,7 +95,7 @@ type dbAdapter struct {
 	db ormdb.DB
 }
 
-func (a *dbAdapter) Get(ctx context.Context, key Key, dst interface{}) error {
+func (a *dbAdapter) Get(ctx context.Context, key Key, dst any) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -104,11 +104,11 @@ func (a *dbAdapter) Get(ctx context.Context, key Key, dst interface{}) error {
 
 // GetForUpdate outside a transaction is never what you want. Return an error
 // to force the caller into a RunInTransactionWith block.
-func (a *dbAdapter) GetForUpdate(_ context.Context, _ Key, _ interface{}) error {
+func (a *dbAdapter) GetForUpdate(_ context.Context, _ Key, _ any) error {
 	return errors.New("orm: GetForUpdate requires an enclosing transaction (RunInTransactionWith)")
 }
 
-func (a *dbAdapter) Put(ctx context.Context, key Key, src interface{}) (Key, error) {
+func (a *dbAdapter) Put(ctx context.Context, key Key, src any) (Key, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -119,7 +119,7 @@ func (a *dbAdapter) Put(ctx context.Context, key Key, src interface{}) (Key, err
 	return fromDBKey(k), nil
 }
 
-func (a *dbAdapter) CreateIfAbsent(ctx context.Context, key Key, src interface{}) (bool, error) {
+func (a *dbAdapter) CreateIfAbsent(ctx context.Context, key Key, src any) (bool, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -229,17 +229,17 @@ type txAdapter struct {
 	db ormdb.DB // for NewKey, AllocateIDs, etc.
 }
 
-func (t *txAdapter) Get(_ context.Context, key Key, dst interface{}) error {
+func (t *txAdapter) Get(_ context.Context, key Key, dst any) error {
 	return t.tx.Get(toDBKey(key), dst)
 }
 
 // GetForUpdate inside a tx goes straight to the driver's row-lock path.
 // SQLite honors this via the write mutex it already holds for the tx.
-func (t *txAdapter) GetForUpdate(_ context.Context, key Key, dst interface{}) error {
+func (t *txAdapter) GetForUpdate(_ context.Context, key Key, dst any) error {
 	return t.tx.GetForUpdate(toDBKey(key), dst)
 }
 
-func (t *txAdapter) Put(_ context.Context, key Key, src interface{}) (Key, error) {
+func (t *txAdapter) Put(_ context.Context, key Key, src any) (Key, error) {
 	k, err := t.tx.Put(toDBKey(key), src)
 	if err != nil {
 		return nil, err
@@ -247,7 +247,7 @@ func (t *txAdapter) Put(_ context.Context, key Key, src interface{}) (Key, error
 	return fromDBKey(k), nil
 }
 
-func (t *txAdapter) CreateIfAbsent(_ context.Context, key Key, src interface{}) (bool, error) {
+func (t *txAdapter) CreateIfAbsent(_ context.Context, key Key, src any) (bool, error) {
 	return t.tx.CreateIfAbsent(toDBKey(key), src)
 }
 
@@ -293,7 +293,7 @@ type queryAdapter struct {
 	kind string
 }
 
-func (q *queryAdapter) Filter(filterStr string, value interface{}) Query {
+func (q *queryAdapter) Filter(filterStr string, value any) Query {
 	return &queryAdapter{q: q.q.Filter(filterStr, value), db: q.db, kind: q.kind}
 }
 
@@ -317,7 +317,7 @@ func (q *queryAdapter) KeysOnly() Query {
 	return q // no-op; results always include data from SQLite
 }
 
-func (q *queryAdapter) GetAll(ctx context.Context, dst interface{}) ([]Key, error) {
+func (q *queryAdapter) GetAll(ctx context.Context, dst any) ([]Key, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -328,7 +328,7 @@ func (q *queryAdapter) GetAll(ctx context.Context, dst interface{}) ([]Key, erro
 	return fromDBKeys(dbKeys), nil
 }
 
-func (q *queryAdapter) First(dst interface{}) (Key, bool, error) {
+func (q *queryAdapter) First(dst any) (Key, bool, error) {
 	k, err := q.q.First(context.Background(), dst)
 	if err != nil {
 		if err == ormdb.ErrNoSuchEntity {
@@ -349,7 +349,7 @@ func (q *queryAdapter) Count(ctx context.Context) (int, error) {
 	return q.q.Count(ctx)
 }
 
-func (q *queryAdapter) ById(id string, dst interface{}) (Key, bool, error) {
+func (q *queryAdapter) ById(id string, dst any) (Key, bool, error) {
 	key := q.db.NewKey(q.kind, id, 0, nil)
 	err := q.db.Get(context.Background(), key, dst)
 	if err != nil {
@@ -363,7 +363,7 @@ func (q *queryAdapter) ById(id string, dst interface{}) (Key, bool, error) {
 
 func (q *queryAdapter) IdExists(id string) (Key, bool, error) {
 	key := q.db.NewKey(q.kind, id, 0, nil)
-	var dummy map[string]interface{}
+	var dummy map[string]any
 	err := q.db.Get(context.Background(), key, &dummy)
 	if err != nil {
 		if err == ormdb.ErrNoSuchEntity {
@@ -375,7 +375,7 @@ func (q *queryAdapter) IdExists(id string) (Key, bool, error) {
 }
 
 func (q *queryAdapter) KeyExists(key Key) (bool, error) {
-	var dummy map[string]interface{}
+	var dummy map[string]any
 	err := q.db.Get(context.Background(), toDBKey(key), &dummy)
 	if err != nil {
 		if err == ormdb.ErrNoSuchEntity {

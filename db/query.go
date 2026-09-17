@@ -7,13 +7,13 @@ import (
 	"unicode"
 )
 
-var idCounter uint64
+var idCounter atomic.Uint64
 
 // QueryFilter holds a filter condition.
 type QueryFilter struct {
 	Field string
 	Op    string
-	Value interface{}
+	Value any
 }
 
 // QueryOrder holds an order directive.
@@ -36,8 +36,8 @@ func ParseFilterString(s string) (field, op string) {
 	s = strings.TrimSpace(s)
 	// Longest first: ">=" must not be read as ">" with a stray "=" on the field.
 	for _, opStr := range []string{">=", "<=", "!=", "=", ">", "<"} {
-		if strings.HasSuffix(s, opStr) {
-			return strings.TrimSpace(strings.TrimSuffix(s, opStr)), opStr
+		if before, ok := strings.CutSuffix(s, opStr); ok {
+			return strings.TrimSpace(before), opStr
 		}
 	}
 	return s, "="
@@ -120,7 +120,7 @@ func LowercaseFirst(s string) string {
 // (uuid.NewString), not this. Callers that need a store-assigned key should go
 // through NewIncompleteKey or AllocateIDs.
 func newStringID() string {
-	seq := atomic.AddUint64(&idCounter, 1)
+	seq := idCounter.Add(1)
 	return fmt.Sprintf("%d%04d", timeNow().UnixNano(), seq%10000)
 }
 

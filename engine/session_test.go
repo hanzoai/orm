@@ -304,7 +304,7 @@ func TestEngine_In(t *testing.T) {
 func TestEngine_Transaction(t *testing.T) {
 	e := newTestEngine(t)
 
-	_, err := e.Transaction(func(sess *Session) (interface{}, error) {
+	_, err := e.Transaction(func(sess *Session) (any, error) {
 		_, err := sess.Insert(&User{Name: "Alice", Email: "alice@example.com", Age: 30})
 		if err != nil {
 			return nil, err

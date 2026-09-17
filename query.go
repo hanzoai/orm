@@ -10,7 +10,7 @@ type ModelQuery[T any] struct {
 }
 
 // Filter adds a filter condition.
-func (q *ModelQuery[T]) Filter(filterStr string, value interface{}) *ModelQuery[T] {
+func (q *ModelQuery[T]) Filter(filterStr string, value any) *ModelQuery[T] {
 	q.query = q.query.Filter(filterStr, value)
 	return q
 }

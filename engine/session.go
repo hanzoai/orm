@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 )
@@ -29,10 +30,10 @@ type Session struct {
 	selectSt string // custom SELECT clause
 	limit    int
 	offset   int
-	pk       interface{} // primary key value (single or PK{})
+	pk       any // primary key value (single or PK{})
 
 	rawSQL  string
-	rawArgs []interface{}
+	rawArgs []any
 
 	ctx context.Context
 }
@@ -80,14 +81,14 @@ func (s *Session) Rollback() error {
 func (s *Session) Close() {}
 
 // Table sets the table name.
-func (s *Session) Table(name interface{}) *Session {
+func (s *Session) Table(name any) *Session {
 	switch v := name.(type) {
 	case string:
 		s.table = v
 	default:
 		// Assume it's a struct — derive table name
 		typ := reflect.TypeOf(name)
-		if typ.Kind() == reflect.Ptr {
+		if typ.Kind() == reflect.Pointer {
 			typ = typ.Elem()
 		}
 		s.table = s.engine.tableMapper.Obj2Table(typ.Name())
@@ -108,37 +109,37 @@ func (s *Session) Select(str string) *Session {
 }
 
 // Where adds a WHERE condition.
-func (s *Session) Where(query string, args ...interface{}) *Session {
+func (s *Session) Where(query string, args ...any) *Session {
 	s.wheres = append(s.wheres, condition{query: query, args: args})
 	return s
 }
 
 // And adds an AND condition.
-func (s *Session) And(query string, args ...interface{}) *Session {
+func (s *Session) And(query string, args ...any) *Session {
 	s.wheres = append(s.wheres, condition{query: query, args: args})
 	return s
 }
 
 // Or adds an OR condition.
-func (s *Session) Or(query string, args ...interface{}) *Session {
+func (s *Session) Or(query string, args ...any) *Session {
 	s.wheres = append(s.wheres, condition{query: query, args: args, or: true})
 	return s
 }
 
 // In adds an IN condition.
-func (s *Session) In(col string, args ...interface{}) *Session {
+func (s *Session) In(col string, args ...any) *Session {
 	s.wheres = append(s.wheres, buildIn(col, args))
 	return s
 }
 
 // NotIn adds a NOT IN condition.
-func (s *Session) NotIn(col string, args ...interface{}) *Session {
+func (s *Session) NotIn(col string, args ...any) *Session {
 	s.wheres = append(s.wheres, buildNotIn(col, args))
 	return s
 }
 
 // ID sets the primary key for the query.
-func (s *Session) ID(pk interface{}) *Session {
+func (s *Session) ID(pk any) *Session {
 	s.pk = pk
 	return s
 }
@@ -205,7 +206,7 @@ func (s *Session) Having(cond string) *Session {
 }
 
 // Join adds a JOIN clause.
-func (s *Session) Join(joinType, tableName string, cond string, args ...interface{}) *Session {
+func (s *Session) Join(joinType, tableName string, cond string, args ...any) *Session {
 	s.joins = append(s.joins, joinClause{
 		joinType: joinType,
 		table:    tableName,
@@ -216,7 +217,7 @@ func (s *Session) Join(joinType, tableName string, cond string, args ...interfac
 }
 
 // SQL sets a raw SQL query.
-func (s *Session) SQL(query string, args ...interface{}) *Session {
+func (s *Session) SQL(query string, args ...any) *Session {
 	s.rawSQL = query
 	s.rawArgs = args
 	return s
@@ -228,7 +229,7 @@ func (s *Session) Prepare() *Session {
 }
 
 // Get retrieves a single record into bean. Returns (true, nil) if found.
-func (s *Session) Get(bean interface{}) (bool, error) {
+func (s *Session) Get(bean any) (bool, error) {
 	table := s.resolveTable(bean)
 	if table == nil {
 		return false, fmt.Errorf("engine: cannot resolve table for %T", bean)
@@ -270,14 +271,14 @@ func (s *Session) Get(bean interface{}) (bool, error) {
 }
 
 // Find retrieves multiple records into a slice pointer.
-func (s *Session) Find(beans interface{}, conds ...interface{}) error {
+func (s *Session) Find(beans any, conds ...any) error {
 	sliceVal := reflect.ValueOf(beans)
-	if sliceVal.Kind() != reflect.Ptr || sliceVal.Elem().Kind() != reflect.Slice {
+	if sliceVal.Kind() != reflect.Pointer || sliceVal.Elem().Kind() != reflect.Slice {
 		return errors.New("engine: beans must be a pointer to a slice")
 	}
 
 	elemType := sliceVal.Elem().Type().Elem()
-	isPtr := elemType.Kind() == reflect.Ptr
+	isPtr := elemType.Kind() == reflect.Pointer
 	if isPtr {
 		elemType = elemType.Elem()
 	}
@@ -361,7 +362,7 @@ func (s *Session) Find(beans interface{}, conds ...interface{}) error {
 }
 
 // Insert inserts one or more records.
-func (s *Session) Insert(beans ...interface{}) (int64, error) {
+func (s *Session) Insert(beans ...any) (int64, error) {
 	var totalAffected int64
 
 	for _, bean := range beans {
@@ -414,7 +415,7 @@ func (s *Session) Insert(beans ...interface{}) (int64, error) {
 }
 
 // Update updates records matching conditions.
-func (s *Session) Update(bean interface{}, conds ...interface{}) (int64, error) {
+func (s *Session) Update(bean any, conds ...any) (int64, error) {
 	table := s.resolveTable(bean)
 	if table == nil {
 		return 0, fmt.Errorf("engine: cannot resolve table for %T", bean)
@@ -459,7 +460,7 @@ func (s *Session) Update(bean interface{}, conds ...interface{}) (int64, error) 
 }
 
 // Delete deletes records matching conditions.
-func (s *Session) Delete(bean interface{}) (int64, error) {
+func (s *Session) Delete(bean any) (int64, error) {
 	table := s.resolveTable(bean)
 	if table == nil {
 		return 0, fmt.Errorf("engine: cannot resolve table for %T", bean)
@@ -484,7 +485,7 @@ func (s *Session) Delete(bean interface{}) (int64, error) {
 }
 
 // Count counts matching records.
-func (s *Session) Count(bean ...interface{}) (int64, error) {
+func (s *Session) Count(bean ...any) (int64, error) {
 	var table *TableMeta
 	if len(bean) > 0 && bean[0] != nil {
 		table = s.resolveTable(bean[0])
@@ -522,7 +523,7 @@ func (s *Session) Count(bean ...interface{}) (int64, error) {
 }
 
 // Exec executes raw SQL.
-func (s *Session) Exec(sqlOrArgs ...interface{}) (sql.Result, error) {
+func (s *Session) Exec(sqlOrArgs ...any) (sql.Result, error) {
 	if s.rawSQL != "" {
 		return s.exec(s.rawSQL, s.rawArgs...)
 	}
@@ -539,9 +540,9 @@ func (s *Session) Exec(sqlOrArgs ...interface{}) (sql.Result, error) {
 }
 
 // QueryBytes executes raw SQL and returns []map[string][]byte.
-func (s *Session) QueryBytes(sqlOrArgs ...interface{}) ([]map[string][]byte, error) {
+func (s *Session) QueryBytes(sqlOrArgs ...any) ([]map[string][]byte, error) {
 	var sqlStr string
-	var args []interface{}
+	var args []any
 
 	if s.rawSQL != "" {
 		sqlStr = s.rawSQL
@@ -568,8 +569,8 @@ func (s *Session) QueryBytes(sqlOrArgs ...interface{}) ([]map[string][]byte, err
 
 	var results []map[string][]byte
 	for rows.Next() {
-		values := make([]interface{}, len(columns))
-		scanDest := make([]interface{}, len(columns))
+		values := make([]any, len(columns))
+		scanDest := make([]any, len(columns))
 		for i := range values {
 			scanDest[i] = &values[i]
 		}
@@ -598,7 +599,7 @@ func (s *Session) QueryBytes(sqlOrArgs ...interface{}) ([]map[string][]byte, err
 }
 
 // Exist checks if a record exists.
-func (s *Session) Exist(bean ...interface{}) (bool, error) {
+func (s *Session) Exist(bean ...any) (bool, error) {
 	var table *TableMeta
 	if len(bean) > 0 && bean[0] != nil {
 		table = s.resolveTable(bean[0])
@@ -638,7 +639,7 @@ func (s *Session) Exist(bean ...interface{}) (bool, error) {
 
 // --- internal helpers ---
 
-func (s *Session) resolveTable(bean interface{}) *TableMeta {
+func (s *Session) resolveTable(bean any) *TableMeta {
 	if s.table != "" {
 		if t := s.engine.Table(s.table); t != nil {
 			return t
@@ -681,7 +682,7 @@ func (s *Session) buildSelectCols(table *TableMeta) string {
 	return "*"
 }
 
-func (s *Session) buildWhere(table *TableMeta, bean interface{}) []condition {
+func (s *Session) buildWhere(table *TableMeta, bean any) []condition {
 	conds := make([]condition, 0, len(s.wheres)+2)
 
 	// Add PK condition if set
@@ -726,7 +727,7 @@ func (s *Session) buildPKCondition(table *TableMeta) []condition {
 			if i < len(pk) {
 				conds = append(conds, condition{
 					query: quoteIdent(pkCol, s.engine.driver) + " = ?",
-					args:  []interface{}{pk[i]},
+					args:  []any{pk[i]},
 				})
 			}
 		}
@@ -737,23 +738,23 @@ func (s *Session) buildPKCondition(table *TableMeta) []condition {
 	if len(table.PrimaryKey) > 0 {
 		return []condition{{
 			query: quoteIdent(table.PrimaryKey[0], s.engine.driver) + " = ?",
-			args:  []interface{}{s.pk},
+			args:  []any{s.pk},
 		}}
 	}
 
 	// Fallback to "id"
 	return []condition{{
 		query: quoteIdent("id", s.engine.driver) + " = ?",
-		args:  []interface{}{s.pk},
+		args:  []any{s.pk},
 	}}
 }
 
 // beanFieldConditions generates WHERE conditions from non-zero struct fields.
 // This matches xorm's behavior where Get(&User{Name: "foo"}) generates
 // WHERE name = 'foo'.
-func (s *Session) beanFieldConditions(bean interface{}, table *TableMeta) []condition {
+func (s *Session) beanFieldConditions(bean any, table *TableMeta) []condition {
 	val := reflect.ValueOf(bean)
-	if val.Kind() == reflect.Ptr {
+	if val.Kind() == reflect.Pointer {
 		val = val.Elem()
 	}
 	if val.Kind() != reflect.Struct {
@@ -775,7 +776,7 @@ func (s *Session) beanFieldConditions(bean interface{}, table *TableMeta) []cond
 			continue
 		}
 
-		var v interface{}
+		var v any
 		if col.IsJSON {
 			data, err := json.Marshal(fv.Interface())
 			if err != nil {
@@ -788,20 +789,20 @@ func (s *Session) beanFieldConditions(bean interface{}, table *TableMeta) []cond
 
 		conds = append(conds, condition{
 			query: quoteIdent(col.Name, s.engine.driver) + " = ?",
-			args:  []interface{}{v},
+			args:  []any{v},
 		})
 	}
 
 	return conds
 }
 
-func (s *Session) addBeanConditions(bean interface{}, table *TableMeta) {
+func (s *Session) addBeanConditions(bean any, table *TableMeta) {
 	if bean == nil {
 		return
 	}
 
 	val := reflect.ValueOf(bean)
-	if val.Kind() == reflect.Ptr {
+	if val.Kind() == reflect.Pointer {
 		val = val.Elem()
 	}
 	if val.Kind() != reflect.Struct {
@@ -814,7 +815,7 @@ func (s *Session) addBeanConditions(bean interface{}, table *TableMeta) {
 			continue
 		}
 
-		var v interface{}
+		var v any
 		if col.IsJSON {
 			data, err := json.Marshal(fv.Interface())
 			if err != nil {
@@ -827,7 +828,7 @@ func (s *Session) addBeanConditions(bean interface{}, table *TableMeta) {
 
 		s.wheres = append(s.wheres, condition{
 			query: quoteIdent(col.Name, s.engine.driver) + " = ?",
-			args:  []interface{}{v},
+			args:  []any{v},
 		})
 	}
 }
@@ -880,14 +881,14 @@ func (s *Session) buildLimitOffset(b *Builder) {
 	}
 }
 
-func (s *Session) buildInsertValues(bean interface{}, table *TableMeta) ([]string, []interface{}) {
+func (s *Session) buildInsertValues(bean any, table *TableMeta) ([]string, []any) {
 	val := reflect.ValueOf(bean)
-	if val.Kind() == reflect.Ptr {
+	if val.Kind() == reflect.Pointer {
 		val = val.Elem()
 	}
 
 	var cols []string
-	var vals []interface{}
+	var vals []any
 
 	for _, col := range table.Columns {
 		if col.IsAutoIncr {
@@ -942,14 +943,14 @@ func (s *Session) buildInsertValues(bean interface{}, table *TableMeta) ([]strin
 	return cols, vals
 }
 
-func (s *Session) buildUpdateValues(bean interface{}, table *TableMeta) ([]string, []interface{}) {
+func (s *Session) buildUpdateValues(bean any, table *TableMeta) ([]string, []any) {
 	val := reflect.ValueOf(bean)
-	if val.Kind() == reflect.Ptr {
+	if val.Kind() == reflect.Pointer {
 		val = val.Elem()
 	}
 
 	var cols []string
-	var vals []interface{}
+	var vals []any
 
 	for _, col := range table.Columns {
 		if col.IsPrimaryKey {
@@ -1006,26 +1007,16 @@ func (s *Session) buildUpdateValues(bean interface{}, table *TableMeta) ([]strin
 }
 
 func (s *Session) colIncluded(name string) bool {
-	for _, c := range s.cols {
-		if c == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(s.cols, name)
 }
 
 func (s *Session) colOmitted(name string) bool {
-	for _, c := range s.omitCols {
-		if c == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(s.omitCols, name)
 }
 
-func (s *Session) setAutoID(bean interface{}, table *TableMeta, id int64) {
+func (s *Session) setAutoID(bean any, table *TableMeta, id int64) {
 	val := reflect.ValueOf(bean)
-	if val.Kind() == reflect.Ptr {
+	if val.Kind() == reflect.Pointer {
 		val = val.Elem()
 	}
 
@@ -1043,7 +1034,7 @@ func (s *Session) setAutoID(bean interface{}, table *TableMeta, id int64) {
 	}
 }
 
-func (s *Session) scanRow(row *sql.Row, bean interface{}, table *TableMeta) (bool, error) {
+func (s *Session) scanRow(row *sql.Row, bean any, table *TableMeta) (bool, error) {
 	if s.rawSQL != "" || s.selectSt != "" {
 		return s.scanRowDynamic(row, bean)
 	}
@@ -1061,10 +1052,10 @@ func (s *Session) scanRow(row *sql.Row, bean interface{}, table *TableMeta) (boo
 	return true, nil
 }
 
-func (s *Session) scanRowDynamic(row *sql.Row, bean interface{}) (bool, error) {
+func (s *Session) scanRowDynamic(row *sql.Row, bean any) (bool, error) {
 	// For raw SQL, scan all columns dynamically
 	val := reflect.ValueOf(bean)
-	if val.Kind() == reflect.Ptr {
+	if val.Kind() == reflect.Pointer {
 		val = val.Elem()
 	}
 
@@ -1084,10 +1075,10 @@ func (s *Session) scanRowDynamic(row *sql.Row, bean interface{}) (bool, error) {
 	return true, nil
 }
 
-func (s *Session) scanRows(rows *sql.Rows, columns []string, bean interface{}, table *TableMeta) error {
-	vals := make([]interface{}, len(columns))
+func (s *Session) scanRows(rows *sql.Rows, columns []string, bean any, table *TableMeta) error {
+	vals := make([]any, len(columns))
 	for i := range vals {
-		vals[i] = new(interface{})
+		vals[i] = new(any)
 	}
 
 	if err := rows.Scan(vals...); err != nil {
@@ -1095,12 +1086,12 @@ func (s *Session) scanRows(rows *sql.Rows, columns []string, bean interface{}, t
 	}
 
 	beanVal := reflect.ValueOf(bean)
-	if beanVal.Kind() == reflect.Ptr {
+	if beanVal.Kind() == reflect.Pointer {
 		beanVal = beanVal.Elem()
 	}
 
 	for i, colName := range columns {
-		raw := *(vals[i].(*interface{}))
+		raw := *(vals[i].(*any))
 		if raw == nil {
 			continue
 		}
@@ -1123,22 +1114,22 @@ func (s *Session) scanRows(rows *sql.Rows, columns []string, bean interface{}, t
 	return nil
 }
 
-func (s *Session) buildScanDest(bean interface{}, table *TableMeta) ([]interface{}, []*ColumnMeta) {
+func (s *Session) buildScanDest(bean any, table *TableMeta) ([]any, []*ColumnMeta) {
 	// For SELECT *, scan all columns
-	vals := make([]interface{}, len(table.Columns))
+	vals := make([]any, len(table.Columns))
 	fields := make([]*ColumnMeta, len(table.Columns))
 
 	for i, col := range table.Columns {
-		vals[i] = new(interface{})
+		vals[i] = new(any)
 		fields[i] = col
 	}
 
 	return vals, fields
 }
 
-func (s *Session) assignScanned(bean interface{}, fields []*ColumnMeta, vals []interface{}, table *TableMeta) {
+func (s *Session) assignScanned(bean any, fields []*ColumnMeta, vals []any, table *TableMeta) {
 	beanVal := reflect.ValueOf(bean)
-	if beanVal.Kind() == reflect.Ptr {
+	if beanVal.Kind() == reflect.Pointer {
 		beanVal = beanVal.Elem()
 	}
 
@@ -1146,7 +1137,7 @@ func (s *Session) assignScanned(bean interface{}, fields []*ColumnMeta, vals []i
 		if col == nil {
 			continue
 		}
-		raw := *(vals[i].(*interface{}))
+		raw := *(vals[i].(*any))
 		if raw == nil {
 			continue
 		}
@@ -1161,7 +1152,7 @@ func (s *Session) assignScanned(bean interface{}, fields []*ColumnMeta, vals []i
 }
 
 // exec delegates to tx or db.
-func (s *Session) exec(query string, args ...interface{}) (sql.Result, error) {
+func (s *Session) exec(query string, args ...any) (sql.Result, error) {
 	if s.engine.driver == "postgres" {
 		query = convertToPostgres(query)
 	}
@@ -1173,7 +1164,7 @@ func (s *Session) exec(query string, args ...interface{}) (sql.Result, error) {
 }
 
 // query delegates to tx or db.
-func (s *Session) query(query string, args ...interface{}) (*sql.Rows, error) {
+func (s *Session) query(query string, args ...any) (*sql.Rows, error) {
 	if s.engine.driver == "postgres" {
 		query = convertToPostgres(query)
 	}
@@ -1185,7 +1176,7 @@ func (s *Session) query(query string, args ...interface{}) (*sql.Rows, error) {
 }
 
 // queryRow delegates to tx or db.
-func (s *Session) queryRow(query string, args ...interface{}) *sql.Row {
+func (s *Session) queryRow(query string, args ...any) *sql.Row {
 	if s.engine.driver == "postgres" {
 		query = convertToPostgres(query)
 	}
@@ -1203,7 +1194,7 @@ func (s *Session) queryRow(query string, args ...interface{}) *sql.Row {
 // value — and fixes one stored representation that scanTime reads back. Every
 // other argument passes through untouched. Applied at this single boundary so
 // there is one and only one place Go values become DB args.
-func normalizeArgs(args []interface{}) []interface{} {
+func normalizeArgs(args []any) []any {
 	for i, a := range args {
 		switch v := a.(type) {
 		case time.Time:

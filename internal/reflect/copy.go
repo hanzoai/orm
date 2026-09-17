@@ -4,7 +4,7 @@ import "reflect"
 
 // Copy copies fields from src to dst using reflection.
 // Supports struct-to-struct and slice-to-slice copying.
-func Copy(src interface{}, dst interface{}) (err error) {
+func Copy(src any, dst any) (err error) {
 	var (
 		isSlice   bool
 		fromType  reflect.Type
@@ -21,7 +21,7 @@ func Copy(src interface{}, dst interface{}) (err error) {
 		isSlice = true
 		if from.Kind() == reflect.Slice {
 			fromType = from.Type().Elem()
-			if fromType.Kind() == reflect.Ptr {
+			if fromType.Kind() == reflect.Pointer {
 				fromType = fromType.Elem()
 				isFromPtr = true
 			}
@@ -32,7 +32,7 @@ func Copy(src interface{}, dst interface{}) (err error) {
 		}
 
 		toType = to.Type().Elem()
-		if toType.Kind() == reflect.Ptr {
+		if toType.Kind() == reflect.Pointer {
 			toType = toType.Elem()
 			isToPtr = true
 		}
@@ -63,8 +63,7 @@ func Copy(src interface{}, dst interface{}) (err error) {
 			dest = to
 		}
 
-		for i := 0; i < fromType.NumField(); i++ {
-			field := fromType.Field(i)
+		for field := range fromType.Fields() {
 			if !field.Anonymous {
 				name := field.Name
 				fromField := source.FieldByName(name)
@@ -79,8 +78,7 @@ func Copy(src interface{}, dst interface{}) (err error) {
 			}
 		}
 
-		for i := 0; i < toType.NumField(); i++ {
-			field := toType.Field(i)
+		for field := range toType.Fields() {
 			if !field.Anonymous {
 				name := field.Name
 				fromMethod := source.Addr().MethodByName(name)

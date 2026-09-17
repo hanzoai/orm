@@ -24,7 +24,7 @@ func newMockDB() *mockDB {
 	return db
 }
 
-func (db *mockDB) Get(_ context.Context, key Key, dst interface{}) error {
+func (db *mockDB) Get(_ context.Context, key Key, dst any) error {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 	_, ok := db.store[key.Encode()]
@@ -34,14 +34,14 @@ func (db *mockDB) Get(_ context.Context, key Key, dst interface{}) error {
 	return nil
 }
 
-func (db *mockDB) Put(_ context.Context, key Key, src interface{}) (Key, error) {
+func (db *mockDB) Put(_ context.Context, key Key, src any) (Key, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	db.store[key.Encode()] = nil // simplified
 	return key, nil
 }
 
-func (db *mockDB) CreateIfAbsent(_ context.Context, key Key, src interface{}) (bool, error) {
+func (db *mockDB) CreateIfAbsent(_ context.Context, key Key, src any) (bool, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	k := key.Encode()
@@ -81,7 +81,7 @@ func (db *mockDB) NewIncompleteKey(kind string, parent Key) Key {
 
 func (db *mockDB) AllocateIDs(kind string, parent Key, n int) ([]Key, error) {
 	keys := make([]Key, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		id := db.idSeq.Add(1)
 		keys[i] = &mockKey{kind: kind, intID: id, parent: parent}
 	}
@@ -96,7 +96,7 @@ func (db *mockDB) RunInTransactionWith(_ context.Context, _ *TxOptions, fn func(
 	return fn(db)
 }
 
-func (db *mockDB) GetForUpdate(ctx context.Context, key Key, dst interface{}) error {
+func (db *mockDB) GetForUpdate(ctx context.Context, key Key, dst any) error {
 	return db.Get(ctx, key, dst)
 }
 
@@ -132,18 +132,18 @@ type mockQuery struct {
 	kind string
 }
 
-func (q *mockQuery) Filter(filterStr string, value interface{}) Query { return q }
-func (q *mockQuery) Order(fieldPath string) Query                     { return q }
-func (q *mockQuery) Limit(limit int) Query                            { return q }
-func (q *mockQuery) Offset(offset int) Query                          { return q }
-func (q *mockQuery) Ancestor(ancestor Key) Query                      { return q }
-func (q *mockQuery) KeysOnly() Query                                  { return q }
+func (q *mockQuery) Filter(filterStr string, value any) Query { return q }
+func (q *mockQuery) Order(fieldPath string) Query             { return q }
+func (q *mockQuery) Limit(limit int) Query                    { return q }
+func (q *mockQuery) Offset(offset int) Query                  { return q }
+func (q *mockQuery) Ancestor(ancestor Key) Query              { return q }
+func (q *mockQuery) KeysOnly() Query                          { return q }
 
-func (q *mockQuery) GetAll(_ context.Context, dst interface{}) ([]Key, error) {
+func (q *mockQuery) GetAll(_ context.Context, dst any) ([]Key, error) {
 	return nil, nil
 }
 
-func (q *mockQuery) First(dst interface{}) (Key, bool, error) {
+func (q *mockQuery) First(dst any) (Key, bool, error) {
 	return nil, false, nil
 }
 
@@ -151,7 +151,7 @@ func (q *mockQuery) Count(_ context.Context) (int, error) {
 	return 0, nil
 }
 
-func (q *mockQuery) ById(id string, dst interface{}) (Key, bool, error) {
+func (q *mockQuery) ById(id string, dst any) (Key, bool, error) {
 	key := &mockKey{kind: q.kind, stringID: id}
 	q.db.mu.RLock()
 	_, ok := q.db.store[key.Encode()]

@@ -69,7 +69,7 @@ func TestTypedConcurrentSafe(t *testing.T) {
 	var wg sync.WaitGroup
 	const N = 50
 	wg.Add(N * 2)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		go func(i int) {
 			defer wg.Done()
 			_, _ = base.

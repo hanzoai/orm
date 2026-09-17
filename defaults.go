@@ -12,7 +12,7 @@ import (
 func ApplyDefaults[T any](entity *T) {
 	var zero T
 	typ := reflect.TypeOf(zero)
-	if typ.Kind() == reflect.Ptr {
+	if typ.Kind() == reflect.Pointer {
 		typ = typ.Elem()
 	}
 
@@ -56,7 +56,7 @@ func setFieldFromString(f reflect.Value, s string) {
 		f.SetString(s)
 
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		if f.Type() == reflect.TypeOf(time.Duration(0)) {
+		if f.Type() == reflect.TypeFor[time.Duration]() {
 			d, err := time.ParseDuration(s)
 			if err == nil {
 				f.Set(reflect.ValueOf(d))

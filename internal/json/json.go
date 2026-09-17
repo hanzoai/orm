@@ -20,12 +20,12 @@ var isDevelopment = func() bool {
 }()
 
 // Encode marshals a value to a JSON string.
-func Encode(value interface{}) string {
+func Encode(value any) string {
 	return string(EncodeBytes(value))
 }
 
 // EncodeBytes marshals a value to JSON bytes.
-func EncodeBytes(value interface{}) []byte {
+func EncodeBytes(value any) []byte {
 	var b []byte
 	var err error
 
@@ -42,7 +42,7 @@ func EncodeBytes(value interface{}) []byte {
 }
 
 // EncodeIndentBytes marshals with custom indentation.
-func EncodeIndentBytes(value interface{}, prefix, indent string) []byte {
+func EncodeIndentBytes(value any, prefix, indent string) []byte {
 	b, err := json.MarshalIndent(value, prefix, indent)
 	if err != nil {
 		fmt.Printf("json encode error: %v\n", err)
@@ -51,17 +51,17 @@ func EncodeIndentBytes(value interface{}, prefix, indent string) []byte {
 }
 
 // EncodeRaw marshals to json.RawMessage.
-func EncodeRaw(value interface{}) json.RawMessage {
+func EncodeRaw(value any) json.RawMessage {
 	return json.RawMessage(EncodeBytes(value))
 }
 
 // EncodeBuffer marshals to a bytes.Buffer.
-func EncodeBuffer(value interface{}) *bytes.Buffer {
+func EncodeBuffer(value any) *bytes.Buffer {
 	return bytes.NewBuffer(EncodeBytes(value))
 }
 
 // Decode reads and unmarshals from an io.ReadCloser.
-func Decode(body io.ReadCloser, dst interface{}) error {
+func Decode(body io.ReadCloser, dst any) error {
 	data, err := io.ReadAll(body)
 	body.Close()
 	if err != nil {
@@ -71,12 +71,12 @@ func Decode(body io.ReadCloser, dst interface{}) error {
 }
 
 // DecodeBytes unmarshals from bytes.
-func DecodeBytes(data []byte, dst interface{}) error {
+func DecodeBytes(data []byte, dst any) error {
 	return json.Unmarshal(data, dst)
 }
 
 // DecodeBuffer unmarshals from a buffer.
-func DecodeBuffer(buf *bytes.Buffer, dst interface{}) error {
+func DecodeBuffer(buf *bytes.Buffer, dst any) error {
 	return json.Unmarshal(buf.Bytes(), dst)
 }
 

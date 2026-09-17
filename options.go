@@ -28,7 +28,7 @@ func WithParent[T any](fn func(DB) Key) Option[T] {
 // WithInit sets a custom initialization function called after New().
 func WithInit[T any](fn func(DB, *T)) Option[T] {
 	return &optionFunc[T]{fn: func(meta *Meta) {
-		meta.InitFn = func(db DB, v interface{}) {
+		meta.InitFn = func(db DB, v any) {
 			fn(db, v.(*T))
 		}
 	}}
@@ -37,7 +37,7 @@ func WithInit[T any](fn func(DB, *T)) Option[T] {
 // WithDefaults sets a custom defaults function called on New().
 func WithDefaults[T any](fn func(*T)) Option[T] {
 	return &optionFunc[T]{fn: func(meta *Meta) {
-		meta.DefaultsFn = func(v interface{}) {
+		meta.DefaultsFn = func(v any) {
 			fn(v.(*T))
 		}
 	}}

@@ -148,7 +148,7 @@ func (z *ZapDB) call(ctx context.Context, path string, body []byte) (uint32, []b
 	return uint32(resp.StatusCode()), out, nil
 }
 
-func (z *ZapDB) Get(ctx context.Context, key Key, dst interface{}) error {
+func (z *ZapDB) Get(ctx context.Context, key Key, dst any) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -165,7 +165,7 @@ func (z *ZapDB) Get(ctx context.Context, key Key, dst interface{}) error {
 	}
 }
 
-func (z *ZapDB) Put(ctx context.Context, key Key, src interface{}) (Key, error) {
+func (z *ZapDB) Put(ctx context.Context, key Key, src any) (Key, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -193,7 +193,7 @@ func (z *ZapDB) Put(ctx context.Context, key Key, src interface{}) (Key, error) 
 // (see LLM.md), so these paths are wire-complete but exercised only by the
 // env-gated live integration test, not unit CI. The SQLite backend is the
 // fully-tested reference implementation of the identical contract.
-func (z *ZapDB) CreateIfAbsent(ctx context.Context, key Key, src interface{}) (bool, error) {
+func (z *ZapDB) CreateIfAbsent(ctx context.Context, key Key, src any) (bool, error) {
 	if key == nil || key.Incomplete() {
 		return false, ErrInvalidKey
 	}
@@ -230,7 +230,7 @@ func (z *ZapDB) Delete(ctx context.Context, key Key) error {
 	}
 }
 
-func (z *ZapDB) GetMulti(ctx context.Context, keys []Key, dst interface{}) error {
+func (z *ZapDB) GetMulti(ctx context.Context, keys []Key, dst any) error {
 	for _, k := range keys {
 		if err := z.Get(ctx, k, dst); err != nil {
 			return err
@@ -239,7 +239,7 @@ func (z *ZapDB) GetMulti(ctx context.Context, keys []Key, dst interface{}) error
 	return nil
 }
 
-func (z *ZapDB) PutMulti(ctx context.Context, keys []Key, src interface{}) ([]Key, error) {
+func (z *ZapDB) PutMulti(ctx context.Context, keys []Key, src any) ([]Key, error) {
 	return nil, errors.New("db: zap PutMulti not yet implemented")
 }
 
@@ -260,7 +260,7 @@ func (z *ZapDB) VectorSearch(ctx context.Context, opts *VectorSearchOptions) ([]
 	return nil, errors.New("db: zap vector search not yet implemented")
 }
 
-func (z *ZapDB) PutVector(ctx context.Context, kind string, id string, vector []float32, metadata map[string]interface{}) error {
+func (z *ZapDB) PutVector(ctx context.Context, kind string, id string, vector []float32, metadata map[string]any) error {
 	return errors.New("db: zap PutVector not yet implemented")
 }
 
@@ -281,7 +281,7 @@ func (z *ZapDB) NewIncompleteKey(kind string, parent Key) Key {
 
 func (z *ZapDB) AllocateIDs(kind string, parent Key, n int) ([]Key, error) {
 	keys := make([]Key, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		keys[i] = z.NewKey(kind, newStringID(), 0, parent)
 	}
 	return keys, nil
@@ -306,10 +306,10 @@ func (z *ZapDB) Close() error {
 
 // --- SQL backend ---
 
-func (z *ZapDB) sqlGet(ctx context.Context, key Key, dst interface{}) error {
-	body, _ := json.Marshal(map[string]interface{}{
+func (z *ZapDB) sqlGet(ctx context.Context, key Key, dst any) error {
+	body, _ := json.Marshal(map[string]any{
 		"sql":  fmt.Sprintf("SELECT data FROM %s WHERE id = $1 AND kind = $2 AND deleted = false", z.cfg.Collection),
-		"args": []interface{}{key.StringID(), key.Kind()},
+		"args": []any{key.StringID(), key.Kind()},
 	})
 	status, resp, err := z.call(ctx, "/query", body)
 	if err != nil {
@@ -326,19 +326,19 @@ func (z *ZapDB) sqlGet(ctx context.Context, key Key, dst interface{}) error {
 // stored the entity and left every reader — all of which ask for deleted = false —
 // unable to see it. Same rule and same kind guard as sqliteQuery's putSQL, because
 // it is the same table under a different dialect.
-func (z *ZapDB) sqlPut(ctx context.Context, key Key, src interface{}) (Key, error) {
+func (z *ZapDB) sqlPut(ctx context.Context, key Key, src any) (Key, error) {
 	data, err := json.Marshal(src)
 	if err != nil {
 		return nil, err
 	}
 	now := timeNow().Format(time.RFC3339)
-	body, _ := json.Marshal(map[string]interface{}{
+	body, _ := json.Marshal(map[string]any{
 		"sql": fmt.Sprintf(`INSERT INTO %s (id, kind, data, created_at, updated_at, deleted)
 			VALUES ($1, $2, $3, $4, $5, false)
 			ON CONFLICT (id) DO UPDATE SET data = $3, updated_at = $5,
 				deleted = CASE WHEN %s.kind = $2 THEN false ELSE %s.deleted END`,
 			z.cfg.Collection, z.cfg.Collection, z.cfg.Collection),
-		"args": []interface{}{key.StringID(), key.Kind(), string(data), now, now},
+		"args": []any{key.StringID(), key.Kind(), string(data), now, now},
 	})
 	status, _, err := z.call(ctx, "/exec", body)
 	if err != nil {
@@ -361,20 +361,20 @@ func (z *ZapDB) sqlPut(ctx context.Context, key Key, src interface{}) (Key, erro
 // server table's key (an id primary key vs a composite (id, kind)); the caller
 // precondition — keep each kind in its own stringID keyspace — governs it either
 // way. This path is exercised by the env-gated live test, not unit CI.
-func (z *ZapDB) sqlCreateIfAbsent(ctx context.Context, key Key, src interface{}) (bool, error) {
+func (z *ZapDB) sqlCreateIfAbsent(ctx context.Context, key Key, src any) (bool, error) {
 	data, err := json.Marshal(src)
 	if err != nil {
 		return false, err
 	}
 	now := timeNow().Format(time.RFC3339)
-	body, _ := json.Marshal(map[string]interface{}{
+	body, _ := json.Marshal(map[string]any{
 		"sql": fmt.Sprintf(`INSERT INTO %s (id, kind, data, created_at, updated_at, deleted)
 			VALUES ($1, $2, $3, $4, $5, false)
 			ON CONFLICT (id) DO UPDATE SET
 				data = $3, updated_at = $5, deleted = false
 			WHERE %s.deleted = true AND %s.kind = $2
 			RETURNING id`, z.cfg.Collection, z.cfg.Collection, z.cfg.Collection),
-		"args": []interface{}{key.StringID(), key.Kind(), string(data), now, now},
+		"args": []any{key.StringID(), key.Kind(), string(data), now, now},
 	})
 	status, resp, err := z.call(ctx, "/query", body)
 	if err != nil {
@@ -390,7 +390,7 @@ func (z *ZapDB) sqlCreateIfAbsent(ctx context.Context, key Key, src interface{})
 // created signal for INSERT ... ON CONFLICT ... RETURNING. It reuses the row-array
 // envelope sqlGet decodes; an undecodable reply is an error, never a created win.
 func zapRowsReturned(resp []byte) (bool, error) {
-	var rows []map[string]interface{}
+	var rows []map[string]any
 	if err := json.Unmarshal(resp, &rows); err != nil {
 		return false, fmt.Errorf("db: zap create-if-absent: decode reply: %w", err)
 	}
@@ -398,9 +398,9 @@ func zapRowsReturned(resp []byte) (bool, error) {
 }
 
 func (z *ZapDB) sqlDelete(ctx context.Context, key Key) error {
-	body, _ := json.Marshal(map[string]interface{}{
+	body, _ := json.Marshal(map[string]any{
 		"sql":  fmt.Sprintf("UPDATE %s SET deleted = true, updated_at = $1 WHERE id = $2 AND kind = $3", z.cfg.Collection),
-		"args": []interface{}{timeNow().Format(time.RFC3339), key.StringID(), key.Kind()},
+		"args": []any{timeNow().Format(time.RFC3339), key.StringID(), key.Kind()},
 	})
 	_, _, err := z.call(ctx, "/exec", body)
 	return err
@@ -408,10 +408,10 @@ func (z *ZapDB) sqlDelete(ctx context.Context, key Key) error {
 
 // --- DocumentDB backend ---
 
-func (z *ZapDB) docGet(ctx context.Context, key Key, dst interface{}) error {
-	body, _ := json.Marshal(map[string]interface{}{
+func (z *ZapDB) docGet(ctx context.Context, key Key, dst any) error {
+	body, _ := json.Marshal(map[string]any{
 		"collection": z.cfg.Collection,
-		"filter":     map[string]interface{}{"_id": key.StringID(), "kind": key.Kind(), "deleted": false},
+		"filter":     map[string]any{"_id": key.StringID(), "kind": key.Kind(), "deleted": false},
 		"limit":      1,
 	})
 	status, resp, err := z.call(ctx, "/find", body)
@@ -424,9 +424,9 @@ func (z *ZapDB) docGet(ctx context.Context, key Key, dst interface{}) error {
 	return z.unmarshalDocResult(resp, dst)
 }
 
-func (z *ZapDB) docPut(ctx context.Context, key Key, src interface{}) (Key, error) {
+func (z *ZapDB) docPut(ctx context.Context, key Key, src any) (Key, error) {
 	data, _ := json.Marshal(src)
-	var doc map[string]interface{}
+	var doc map[string]any
 	json.Unmarshal(data, &doc)
 	doc["_id"] = key.StringID()
 	doc["kind"] = key.Kind()
@@ -434,16 +434,16 @@ func (z *ZapDB) docPut(ctx context.Context, key Key, src interface{}) (Key, erro
 	doc["updatedAt"] = timeNow().Format(time.RFC3339)
 
 	// Upsert via update, fall back to insert
-	body, _ := json.Marshal(map[string]interface{}{
+	body, _ := json.Marshal(map[string]any{
 		"collection": z.cfg.Collection,
-		"filter":     map[string]interface{}{"_id": key.StringID()},
-		"update":     map[string]interface{}{"$set": doc},
+		"filter":     map[string]any{"_id": key.StringID()},
+		"update":     map[string]any{"$set": doc},
 	})
 	status, _, err := z.call(ctx, "/update", body)
 	if err != nil || status != 200 {
-		body, _ = json.Marshal(map[string]interface{}{
+		body, _ = json.Marshal(map[string]any{
 			"collection": z.cfg.Collection,
-			"documents":  []interface{}{doc},
+			"documents":  []any{doc},
 		})
 		_, _, err = z.call(ctx, "/insert", body)
 		if err != nil {
@@ -467,12 +467,12 @@ func (z *ZapDB) docPut(ctx context.Context, key Key, src interface{}) (Key, erro
 // ErrKindMismatch the way the SQLite path does. The caller preconditions —
 // separate keyspace per kind, normalize before the key — cover both on this
 // backend until it is live-verified.
-func (z *ZapDB) docCreateIfAbsent(ctx context.Context, key Key, src interface{}) (bool, error) {
+func (z *ZapDB) docCreateIfAbsent(ctx context.Context, key Key, src any) (bool, error) {
 	data, err := json.Marshal(src)
 	if err != nil {
 		return false, err
 	}
-	var doc map[string]interface{}
+	var doc map[string]any
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return false, fmt.Errorf("db: zap document create-if-absent: src must be a JSON object: %w", err)
 	}
@@ -485,9 +485,9 @@ func (z *ZapDB) docCreateIfAbsent(ctx context.Context, key Key, src interface{})
 	doc["createdAt"] = timeNow().Format(time.RFC3339)
 	doc["updatedAt"] = timeNow().Format(time.RFC3339)
 
-	body, _ := json.Marshal(map[string]interface{}{
+	body, _ := json.Marshal(map[string]any{
 		"collection": z.cfg.Collection,
-		"documents":  []interface{}{doc},
+		"documents":  []any{doc},
 	})
 	status, _, err := z.call(ctx, "/insert", body)
 	if err != nil {
@@ -505,10 +505,10 @@ func (z *ZapDB) docCreateIfAbsent(ctx context.Context, key Key, src interface{})
 }
 
 func (z *ZapDB) docDelete(ctx context.Context, key Key) error {
-	body, _ := json.Marshal(map[string]interface{}{
+	body, _ := json.Marshal(map[string]any{
 		"collection": z.cfg.Collection,
-		"filter":     map[string]interface{}{"_id": key.StringID()},
-		"update":     map[string]interface{}{"$set": map[string]interface{}{"deleted": true}},
+		"filter":     map[string]any{"_id": key.StringID()},
+		"update":     map[string]any{"$set": map[string]any{"deleted": true}},
 	})
 	_, _, err := z.call(ctx, "/update", body)
 	return err
@@ -516,9 +516,9 @@ func (z *ZapDB) docDelete(ctx context.Context, key Key) error {
 
 // --- KV backend ---
 
-func (z *ZapDB) kvGet(ctx context.Context, key Key, dst interface{}) error {
+func (z *ZapDB) kvGet(ctx context.Context, key Key, dst any) error {
 	kvKey := fmt.Sprintf("%s:%s:%s", z.cfg.Collection, key.Kind(), key.StringID())
-	body, _ := json.Marshal(map[string]interface{}{"key": kvKey})
+	body, _ := json.Marshal(map[string]any{"key": kvKey})
 	status, resp, err := z.call(ctx, "/get", body)
 	if err != nil {
 		return err
@@ -529,10 +529,10 @@ func (z *ZapDB) kvGet(ctx context.Context, key Key, dst interface{}) error {
 	return json.Unmarshal(resp, dst)
 }
 
-func (z *ZapDB) kvPut(ctx context.Context, key Key, src interface{}) (Key, error) {
+func (z *ZapDB) kvPut(ctx context.Context, key Key, src any) (Key, error) {
 	data, _ := json.Marshal(src)
 	kvKey := fmt.Sprintf("%s:%s:%s", z.cfg.Collection, key.Kind(), key.StringID())
-	body, _ := json.Marshal(map[string]interface{}{
+	body, _ := json.Marshal(map[string]any{
 		"key":   kvKey,
 		"value": string(data),
 	})
@@ -548,10 +548,10 @@ func (z *ZapDB) kvPut(ctx context.Context, key Key, src interface{}) (Key, error
 // (the KV backend hard-deletes, so absent == not present, no soft-delete case).
 // Valkey replies +OK when the write applied and a null bulk string when NX
 // suppressed it; any other reply is an error, never a created win.
-func (z *ZapDB) kvCreateIfAbsent(ctx context.Context, key Key, src interface{}) (bool, error) {
+func (z *ZapDB) kvCreateIfAbsent(ctx context.Context, key Key, src any) (bool, error) {
 	data, _ := json.Marshal(src)
 	kvKey := fmt.Sprintf("%s:%s:%s", z.cfg.Collection, key.Kind(), key.StringID())
-	body, _ := json.Marshal(map[string]interface{}{
+	body, _ := json.Marshal(map[string]any{
 		"cmd":  "SET",
 		"args": []string{kvKey, string(data), "NX"},
 	})
@@ -574,7 +574,7 @@ func (z *ZapDB) kvCreateIfAbsent(ctx context.Context, key Key, src interface{}) 
 
 func (z *ZapDB) kvDelete(ctx context.Context, key Key) error {
 	kvKey := fmt.Sprintf("%s:%s:%s", z.cfg.Collection, key.Kind(), key.StringID())
-	body, _ := json.Marshal(map[string]interface{}{
+	body, _ := json.Marshal(map[string]any{
 		"cmd":  "DEL",
 		"args": []string{kvKey},
 	})
@@ -584,8 +584,8 @@ func (z *ZapDB) kvDelete(ctx context.Context, key Key) error {
 
 // --- Helpers ---
 
-func (z *ZapDB) unmarshalSQLRows(resp []byte, dst interface{}) error {
-	var rows []map[string]interface{}
+func (z *ZapDB) unmarshalSQLRows(resp []byte, dst any) error {
+	var rows []map[string]any
 	if err := json.Unmarshal(resp, &rows); err != nil {
 		return json.Unmarshal(resp, dst)
 	}
@@ -600,7 +600,7 @@ func (z *ZapDB) unmarshalSQLRows(resp []byte, dst interface{}) error {
 	return json.Unmarshal(b, dst)
 }
 
-func (z *ZapDB) unmarshalDocResult(resp []byte, dst interface{}) error {
+func (z *ZapDB) unmarshalDocResult(resp []byte, dst any) error {
 	var result struct {
 		Documents []json.RawMessage `json:"documents"`
 	}
@@ -658,17 +658,17 @@ type zapQuery struct {
 type zapFilter struct {
 	field string
 	op    string
-	value interface{}
+	value any
 }
 
-func (q *zapQuery) Filter(filterStr string, value interface{}) Query {
+func (q *zapQuery) Filter(filterStr string, value any) Query {
 	field, op := ParseFilterString(filterStr)
 	nq := *q
 	nq.filters = append(append([]zapFilter{}, q.filters...), zapFilter{field, op, value})
 	return &nq
 }
 
-func (q *zapQuery) FilterField(fieldPath string, op string, value interface{}) Query {
+func (q *zapQuery) FilterField(fieldPath string, op string, value any) Query {
 	nq := *q
 	nq.filters = append(append([]zapFilter{}, q.filters...), zapFilter{fieldPath, op, value})
 	return &nq
@@ -688,7 +688,7 @@ func (q *zapQuery) Ancestor(ancestor Key) Query        { return q }
 func (q *zapQuery) Start(cursor Cursor) Query          { return q }
 func (q *zapQuery) End(cursor Cursor) Query            { return q }
 
-func (q *zapQuery) GetAll(ctx context.Context, dst interface{}) ([]Key, error) {
+func (q *zapQuery) GetAll(ctx context.Context, dst any) ([]Key, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -703,7 +703,7 @@ func (q *zapQuery) GetAll(ctx context.Context, dst interface{}) ([]Key, error) {
 	}
 }
 
-func (q *zapQuery) First(ctx context.Context, dst interface{}) (Key, error) {
+func (q *zapQuery) First(ctx context.Context, dst any) (Key, error) {
 	limited := q.Limit(1)
 	keys, err := limited.GetAll(ctx, dst)
 	if err != nil {
@@ -723,12 +723,12 @@ func (q *zapQuery) Count(ctx context.Context) (int, error) {
 	defer cancel()
 
 	sql, args := q.buildSQL("COUNT(*) as count")
-	body, _ := json.Marshal(map[string]interface{}{"sql": sql, "args": args})
+	body, _ := json.Marshal(map[string]any{"sql": sql, "args": args})
 	_, resp, err := q.db.call(ctx, "/query", body)
 	if err != nil {
 		return 0, err
 	}
-	var rows []map[string]interface{}
+	var rows []map[string]any
 	json.Unmarshal(resp, &rows)
 	if len(rows) == 0 {
 		return 0, nil
@@ -771,12 +771,12 @@ func (q *zapQuery) reduce(ctx context.Context, field string) (float64, int, erro
 	expr := fmt.Sprintf("json_extract(data, '$.%s')", ToJSONFieldName(field))
 	sql, args := q.buildSQL(fmt.Sprintf(
 		"COALESCE(SUM(CAST(%s AS REAL)), 0) as total, COUNT(%s) as n", expr, expr))
-	body, _ := json.Marshal(map[string]interface{}{"sql": sql, "args": args})
+	body, _ := json.Marshal(map[string]any{"sql": sql, "args": args})
 	_, resp, err := q.db.call(ctx, "/query", body)
 	if err != nil {
 		return 0, 0, err
 	}
-	var rows []map[string]interface{}
+	var rows []map[string]any
 	json.Unmarshal(resp, &rows)
 	if len(rows) == 0 {
 		return 0, 0, nil
@@ -789,17 +789,18 @@ func (q *zapQuery) reduce(ctx context.Context, field string) (float64, int, erro
 func (q *zapQuery) Keys(ctx context.Context) ([]Key, error) { return q.GetAll(ctx, nil) }
 func (q *zapQuery) Run(ctx context.Context) Iterator        { return nil }
 
-func (q *zapQuery) buildSQL(sel string) (string, []interface{}) {
+func (q *zapQuery) buildSQL(sel string) (string, []any) {
 	table := q.db.cfg.Collection
-	args := []interface{}{q.kind}
+	args := []any{q.kind}
 	idx := 2
 
-	sql := fmt.Sprintf("SELECT %s FROM %s WHERE kind = $1 AND deleted = false", sel, table)
+	var sql strings.Builder
+	sql.WriteString(fmt.Sprintf("SELECT %s FROM %s WHERE kind = $1 AND deleted = false", sel, table))
 
 	for _, f := range q.filters {
 		jsonField := ToJSONFieldName(f.field)
 		op := NormalizeOp(f.op)
-		sql += fmt.Sprintf(" AND json_extract(data, '$.%s') %s $%d", jsonField, op, idx)
+		sql.WriteString(fmt.Sprintf(" AND json_extract(data, '$.%s') %s $%d", jsonField, op, idx))
 		args = append(args, f.value)
 		idx++
 	}
@@ -816,21 +817,21 @@ func (q *zapQuery) buildSQL(sel string) (string, []interface{}) {
 			if desc {
 				dir = "DESC"
 			}
-			sql += fmt.Sprintf(" ORDER BY json_extract(data, '$.%s') %s", jsonField, dir)
+			sql.WriteString(fmt.Sprintf(" ORDER BY json_extract(data, '$.%s') %s", jsonField, dir))
 		}
 		if q.limit > 0 {
-			sql += fmt.Sprintf(" LIMIT %d", q.limit)
+			sql.WriteString(fmt.Sprintf(" LIMIT %d", q.limit))
 		}
 		if q.offset > 0 {
-			sql += fmt.Sprintf(" OFFSET %d", q.offset)
+			sql.WriteString(fmt.Sprintf(" OFFSET %d", q.offset))
 		}
 	}
-	return sql, args
+	return sql.String(), args
 }
 
-func (q *zapQuery) sqlGetAll(ctx context.Context, dst interface{}) ([]Key, error) {
+func (q *zapQuery) sqlGetAll(ctx context.Context, dst any) ([]Key, error) {
 	sql, args := q.buildSQL(zapRows)
-	body, _ := json.Marshal(map[string]interface{}{"sql": sql, "args": args})
+	body, _ := json.Marshal(map[string]any{"sql": sql, "args": args})
 	status, resp, err := q.db.call(ctx, "/query", body)
 	if err != nil {
 		return nil, err
@@ -839,7 +840,7 @@ func (q *zapQuery) sqlGetAll(ctx context.Context, dst interface{}) ([]Key, error
 		return nil, fmt.Errorf("db: zap query: status %d", status)
 	}
 
-	var rows []map[string]interface{}
+	var rows []map[string]any
 	json.Unmarshal(resp, &rows)
 
 	keys := make([]Key, 0, len(rows))
@@ -862,26 +863,26 @@ func (q *zapQuery) sqlGetAll(ctx context.Context, dst interface{}) ([]Key, error
 	return keys, nil
 }
 
-func (q *zapQuery) docGetAll(ctx context.Context, dst interface{}) ([]Key, error) {
-	filter := map[string]interface{}{"kind": q.kind, "deleted": false}
+func (q *zapQuery) docGetAll(ctx context.Context, dst any) ([]Key, error) {
+	filter := map[string]any{"kind": q.kind, "deleted": false}
 	for _, f := range q.filters {
 		jsonField := ToJSONFieldName(f.field)
 		switch f.op {
 		case "=", "==":
 			filter[jsonField] = f.value
 		case ">":
-			filter[jsonField] = map[string]interface{}{"$gt": f.value}
+			filter[jsonField] = map[string]any{"$gt": f.value}
 		case ">=":
-			filter[jsonField] = map[string]interface{}{"$gte": f.value}
+			filter[jsonField] = map[string]any{"$gte": f.value}
 		case "<":
-			filter[jsonField] = map[string]interface{}{"$lt": f.value}
+			filter[jsonField] = map[string]any{"$lt": f.value}
 		case "<=":
-			filter[jsonField] = map[string]interface{}{"$lte": f.value}
+			filter[jsonField] = map[string]any{"$lte": f.value}
 		case "!=":
-			filter[jsonField] = map[string]interface{}{"$ne": f.value}
+			filter[jsonField] = map[string]any{"$ne": f.value}
 		}
 	}
-	args := map[string]interface{}{"collection": q.db.cfg.Collection, "filter": filter}
+	args := map[string]any{"collection": q.db.cfg.Collection, "filter": filter}
 	if q.limit > 0 {
 		args["limit"] = q.limit
 	}
@@ -897,7 +898,7 @@ func (q *zapQuery) docGetAll(ctx context.Context, dst interface{}) ([]Key, error
 
 	keys := make([]Key, 0, len(result.Documents))
 	for _, doc := range result.Documents {
-		var m map[string]interface{}
+		var m map[string]any
 		json.Unmarshal(doc, &m)
 		id, _ := m["_id"].(string)
 		keys = append(keys, &zapKey{kind: q.kind, stringID: id})
@@ -913,23 +914,23 @@ func (q *zapQuery) docGetAll(ctx context.Context, dst interface{}) ([]Key, error
 
 type zapTransaction struct{ db *ZapDB }
 
-func (t *zapTransaction) Get(key Key, dst interface{}) error {
+func (t *zapTransaction) Get(key Key, dst any) error {
 	return t.db.Get(context.Background(), key, dst)
 }
 
 // GetForUpdate is Get over ZAP — ZAP's transaction model is application-level
 // and the underlying backend handles locking. Treat as regular Get.
-func (t *zapTransaction) GetForUpdate(key Key, dst interface{}) error {
+func (t *zapTransaction) GetForUpdate(key Key, dst any) error {
 	return t.db.Get(context.Background(), key, dst)
 }
 
-func (t *zapTransaction) Put(key Key, src interface{}) (Key, error) {
+func (t *zapTransaction) Put(key Key, src any) (Key, error) {
 	return t.db.Put(context.Background(), key, src)
 }
 
 // CreateIfAbsent forwards to the DB; ZAP's transaction model is application-level
 // and the underlying backend owns the conditional-insert atomicity.
-func (t *zapTransaction) CreateIfAbsent(key Key, src interface{}) (bool, error) {
+func (t *zapTransaction) CreateIfAbsent(key Key, src any) (bool, error) {
 	return t.db.CreateIfAbsent(context.Background(), key, src)
 }
 

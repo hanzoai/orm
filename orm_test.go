@@ -36,13 +36,13 @@ type Product struct {
 type Order struct {
 	Model[Order]
 
-	Number    string                 `json:"number"`
-	Status    string                 `json:"status" orm:"default:open"`
-	Total     int64                  `json:"total"`
-	Items     []OrderItem            `json:"items" orm:"serialize" datastore:"-"`
-	Items_    string                 `json:"-"`
-	Metadata  map[string]interface{} `json:"metadata" orm:"serialize" datastore:"-"`
-	Metadata_ string                 `json:"-"`
+	Number    string         `json:"number"`
+	Status    string         `json:"status" orm:"default:open"`
+	Total     int64          `json:"total"`
+	Items     []OrderItem    `json:"items" orm:"serialize" datastore:"-"`
+	Items_    string         `json:"-"`
+	Metadata  map[string]any `json:"metadata" orm:"serialize" datastore:"-"`
+	Metadata_ string         `json:"-"`
 }
 
 type OrderItem struct {
@@ -403,7 +403,7 @@ func TestAutoSerializeExplicit(t *testing.T) {
 		{ProductId: "prod_1", Quantity: 2, Price: 1000},
 		{ProductId: "prod_2", Quantity: 1, Price: 500},
 	}
-	o.Metadata = map[string]interface{}{"source": "web"}
+	o.Metadata = map[string]any{"source": "web"}
 
 	// Serialize
 	if err := SerializeFields(o); err != nil {
@@ -634,7 +634,7 @@ func TestMemoryCacheEviction(t *testing.T) {
 	ctx := context.Background()
 
 	// Fill beyond capacity
-	for i := 0; i < 15; i++ {
+	for i := range 15 {
 		key := fmt.Sprintf("key-%d", i)
 		cache.SetEntity(ctx, "test", key, []byte("data"), time.Minute)
 	}

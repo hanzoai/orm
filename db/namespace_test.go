@@ -70,7 +70,7 @@ func TestRegistryRejectsIncompleteConfig(t *testing.T) {
 func TestRegistryReusesOpenHandle(t *testing.T) {
 	r, opens := fakeRegistry(t, NamespacesConfig[DB]{})
 	tn := Namespace("org/acme")
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		if err := r.With(context.Background(), tn, func(DB) error { return nil }); err != nil {
 			t.Fatalf("Do: %v", err)
 		}
@@ -145,12 +145,12 @@ func TestRegistryIdleTTLClosesQuietHandles(t *testing.T) {
 
 func TestRegistryMaterializesOnLocalMiss(t *testing.T) {
 	dir := t.TempDir()
-	var called int64
+	var called atomic.Int64
 	r, _ := fakeRegistry(t, NamespacesConfig[DB]{
 		Dir:     dir,
 		MaxOpen: 4,
 		Materialize: func(_ context.Context, tn Namespace, path string) error {
-			atomic.AddInt64(&called, 1)
+			called.Add(1)
 			// Stand in for a restore from object storage.
 			return os.WriteFile(path, []byte("restored"), 0o600)
 		},
@@ -160,7 +160,7 @@ func TestRegistryMaterializesOnLocalMiss(t *testing.T) {
 	if err := r.With(ctx, tn, func(DB) error { return nil }); err != nil {
 		t.Fatalf("Do: %v", err)
 	}
-	if atomic.LoadInt64(&called) != 1 {
+	if called.Load() != 1 {
 		t.Fatal("Materialize must run when the file is not on local disk")
 	}
 	if _, err := os.Stat(filepath.Join(dir, "org", "from-remote.db")); err != nil {
@@ -168,7 +168,7 @@ func TestRegistryMaterializesOnLocalMiss(t *testing.T) {
 	}
 	// Second use is a local hit; no restore.
 	_ = r.With(ctx, tn, func(DB) error { return nil })
-	if atomic.LoadInt64(&called) != 1 {
+	if called.Load() != 1 {
 		t.Error("Materialize ran on a local hit — disk is a cache, not a passthrough")
 	}
 }
@@ -196,11 +196,11 @@ func TestRegistryOnOpenOnCloseBracketHandleLife(t *testing.T) {
 
 func TestRegistryOpenFailureIsNotCached(t *testing.T) {
 	// A tenant that failed to open once must be retried, not permanently poisoned.
-	var attempts int64
+	var attempts atomic.Int64
 	r, _ := fakeRegistry(t, NamespacesConfig[DB]{
 		MaxOpen: 2,
 		Open: func(tn Namespace, path string) (DB, error) {
-			if atomic.AddInt64(&attempts, 1) == 1 {
+			if attempts.Add(1) == 1 {
 				return nil, errors.New("transient")
 			}
 			return &fakeDB{tenant: tn}, nil
@@ -224,9 +224,8 @@ func TestRegistryConcurrentGetOpensOnce(t *testing.T) {
 	ctx := context.Background()
 	tn := Namespace("user/racy")
 	var wg sync.WaitGroup
-	for i := 0; i < 16; i++ {
-		wg.Add(1)
-		go func() { defer wg.Done(); _ = r.With(ctx, tn, func(DB) error { return nil }) }()
+	for range 16 {
+		wg.Go(func() { _ = r.With(ctx, tn, func(DB) error { return nil }) })
 	}
 	wg.Wait()
 	if got := atomic.LoadInt64(opens); got != 1 {
@@ -268,7 +267,7 @@ func TestRegistryHoldsBoundAboveSampleSize(t *testing.T) {
 	const maxOpen = evictSamples * 2
 	r, _ := fakeRegistry(t, NamespacesConfig[DB]{MaxOpen: maxOpen})
 	ctx := context.Background()
-	for i := 0; i < 20*maxOpen; i++ {
+	for i := range 20 * maxOpen {
 		if err := r.With(ctx, Namespace("org"+"/"+strconv.Itoa(i)), func(DB) error { return nil }); err != nil {
 			t.Fatalf("Do %d: %v", i, err)
 		}

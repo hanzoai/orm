@@ -8,7 +8,7 @@ import (
 // condition represents a WHERE clause fragment.
 type condition struct {
 	query string
-	args  []interface{}
+	args  []any
 	or    bool // true = OR, false = AND
 }
 
@@ -23,7 +23,7 @@ type joinClause struct {
 	joinType string
 	table    string
 	cond     string
-	args     []interface{}
+	args     []any
 }
 
 // Cond is the interface for building complex conditions.
@@ -34,7 +34,7 @@ type Cond interface {
 // Builder assembles SQL queries with proper parameter binding.
 type Builder struct {
 	buf    strings.Builder
-	args   []interface{}
+	args   []any
 	driver string // "postgres", "sqlite", "mysql"
 	pcount int    // parameter counter for $1, $2 etc.
 }
@@ -55,7 +55,7 @@ func (b *Builder) Append(c byte) {
 }
 
 // WriteArg appends a placeholder and records the argument.
-func (b *Builder) WriteArg(arg interface{}) {
+func (b *Builder) WriteArg(arg any) {
 	b.pcount++
 	if b.driver == "postgres" {
 		fmt.Fprintf(&b.buf, "$%d", b.pcount)
@@ -71,7 +71,7 @@ func (b *Builder) String() string {
 }
 
 // Args returns the collected arguments.
-func (b *Builder) Args() []interface{} {
+func (b *Builder) Args() []any {
 	return b.args
 }
 
@@ -120,7 +120,7 @@ func replacePlaceholders(query string, counter *int) string {
 }
 
 // buildIn generates an IN clause: "col IN (?, ?, ?)"
-func buildIn(col string, args []interface{}) condition {
+func buildIn(col string, args []any) condition {
 	if len(args) == 0 {
 		return condition{query: "1=0"} // empty IN always false
 	}
@@ -140,7 +140,7 @@ func buildIn(col string, args []interface{}) condition {
 }
 
 // buildNotIn generates a NOT IN clause.
-func buildNotIn(col string, args []interface{}) condition {
+func buildNotIn(col string, args []any) condition {
 	if len(args) == 0 {
 		return condition{query: "1=1"} // empty NOT IN always true
 	}
@@ -158,10 +158,10 @@ func buildNotIn(col string, args []interface{}) condition {
 }
 
 // buildBetween generates a BETWEEN clause.
-func buildBetween(col string, low, high interface{}) condition {
+func buildBetween(col string, low, high any) condition {
 	return condition{
 		query: fmt.Sprintf("%s BETWEEN ? AND ?", col),
-		args:  []interface{}{low, high},
+		args:  []any{low, high},
 	}
 }
 
@@ -169,7 +169,7 @@ func buildBetween(col string, low, high interface{}) condition {
 func buildLike(col string, pattern string) condition {
 	return condition{
 		query: fmt.Sprintf("%s LIKE ?", col),
-		args:  []interface{}{pattern},
+		args:  []any{pattern},
 	}
 }
 
@@ -184,22 +184,22 @@ func buildIsNotNull(col string) condition {
 }
 
 // Expr creates a raw SQL expression condition.
-func Expr(sql string, args ...interface{}) condition {
+func Expr(sql string, args ...any) condition {
 	return condition{query: sql, args: args}
 }
 
 // In creates an IN condition for use with Session.Where().
-func In(col string, args ...interface{}) condition {
+func In(col string, args ...any) condition {
 	return buildIn(col, args)
 }
 
 // NotIn creates a NOT IN condition.
-func NotIn(col string, args ...interface{}) condition {
+func NotIn(col string, args ...any) condition {
 	return buildNotIn(col, args)
 }
 
 // Between creates a BETWEEN condition.
-func Between(col string, low, high interface{}) condition {
+func Between(col string, low, high any) condition {
 	return buildBetween(col, low, high)
 }
 
@@ -219,77 +219,77 @@ func IsNotNull(col string) condition {
 }
 
 // Eq creates an equality condition: col = value.
-func Eq(col string, value interface{}) condition {
+func Eq(col string, value any) condition {
 	return condition{
 		query: fmt.Sprintf("%s = ?", col),
-		args:  []interface{}{value},
+		args:  []any{value},
 	}
 }
 
 // Neq creates a not-equal condition: col != value.
-func Neq(col string, value interface{}) condition {
+func Neq(col string, value any) condition {
 	return condition{
 		query: fmt.Sprintf("%s != ?", col),
-		args:  []interface{}{value},
+		args:  []any{value},
 	}
 }
 
 // Gt creates a greater-than condition: col > value.
-func Gt(col string, value interface{}) condition {
+func Gt(col string, value any) condition {
 	return condition{
 		query: fmt.Sprintf("%s > ?", col),
-		args:  []interface{}{value},
+		args:  []any{value},
 	}
 }
 
 // Gte creates a greater-than-or-equal condition: col >= value.
-func Gte(col string, value interface{}) condition {
+func Gte(col string, value any) condition {
 	return condition{
 		query: fmt.Sprintf("%s >= ?", col),
-		args:  []interface{}{value},
+		args:  []any{value},
 	}
 }
 
 // Lt creates a less-than condition: col < value.
-func Lt(col string, value interface{}) condition {
+func Lt(col string, value any) condition {
 	return condition{
 		query: fmt.Sprintf("%s < ?", col),
-		args:  []interface{}{value},
+		args:  []any{value},
 	}
 }
 
 // Lte creates a less-than-or-equal condition: col <= value.
-func Lte(col string, value interface{}) condition {
+func Lte(col string, value any) condition {
 	return condition{
 		query: fmt.Sprintf("%s <= ?", col),
-		args:  []interface{}{value},
+		args:  []any{value},
 	}
 }
 
 // flattenArgs expands a single slice argument into individual elements.
-func flattenArgs(args []interface{}) []interface{} {
+func flattenArgs(args []any) []any {
 	if len(args) == 1 {
 		v := args[0]
 		switch val := v.(type) {
 		case []int:
-			out := make([]interface{}, len(val))
+			out := make([]any, len(val))
 			for i, x := range val {
 				out[i] = x
 			}
 			return out
 		case []int64:
-			out := make([]interface{}, len(val))
+			out := make([]any, len(val))
 			for i, x := range val {
 				out[i] = x
 			}
 			return out
 		case []string:
-			out := make([]interface{}, len(val))
+			out := make([]any, len(val))
 			for i, x := range val {
 				out[i] = x
 			}
 			return out
-		case []interface{}:
+		case []any:
 			return val
 		}
 	}

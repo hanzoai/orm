@@ -185,10 +185,10 @@ func TestQueryDecodesNativeTypes(t *testing.T) {
 	when := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
 	rec := &recorder{
 		cols: columns(
-			col{"organization", reflect.TypeOf("")},
-			col{"requests", reflect.TypeOf(uint64(0))},
-			col{"cost_cents", reflect.TypeOf(float64(0))},
-			col{"ts", reflect.TypeOf(time.Time{})},
+			col{"organization", reflect.TypeFor[string]()},
+			col{"requests", reflect.TypeFor[uint64]()},
+			col{"cost_cents", reflect.TypeFor[float64]()},
+			col{"ts", reflect.TypeFor[time.Time]()},
 		),
 		values: [][]any{{"acme", uint64(42), 12.5, when}},
 	}
@@ -223,7 +223,7 @@ func TestQueryDecodesNativeTypes(t *testing.T) {
 // An empty result is an empty slice, never nil: these rows get marshalled to
 // JSON, where nil is null and an empty slice is [].
 func TestQueryEmptyResultIsNotNil(t *testing.T) {
-	c := quiet(&recorder{cols: columns(col{"n", reflect.TypeOf(uint64(0))})})
+	c := quiet(&recorder{cols: columns(col{"n", reflect.TypeFor[uint64]()})})
 	defer func() { _ = c.Close() }()
 
 	rows, err := c.Query(context.Background(), "SELECT n FROM hanzo.events WHERE 0")
@@ -255,7 +255,7 @@ func TestQueryPropagatesDriverError(t *testing.T) {
 // statement reaches the driver byte-for-byte and the tenant value travels as a
 // bound argument, so no value of it can widen the predicate.
 func TestQueryBindsArgumentsAndNeverInterpolates(t *testing.T) {
-	c := quiet(&recorder{cols: columns(col{"n", reflect.TypeOf(uint64(0))})})
+	c := quiet(&recorder{cols: columns(col{"n", reflect.TypeFor[uint64]()})})
 	defer func() { _ = c.Close() }()
 
 	const stmt = "SELECT count() AS n FROM hanzo.cloud_usage WHERE organization = ? AND timestamp >= ?"
@@ -506,25 +506,21 @@ func TestLogValueWithholdsThePassword(t *testing.T) {
 // Reads, writes, gate checks and shutdown all race for the same connection
 // pointer. Run under -race.
 func TestConcurrentUseAndClose(t *testing.T) {
-	c := quiet(&recorder{cols: columns(col{"n", reflect.TypeOf(uint64(0))})})
+	c := quiet(&recorder{cols: columns(col{"n", reflect.TypeFor[uint64]()})})
 
 	var wg sync.WaitGroup
-	for i := 0; i < 16; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < 50; j++ {
+	for range 16 {
+		wg.Go(func() {
+			for range 50 {
 				_ = c.Ready()
 				_, _ = c.Query(context.Background(), "SELECT count() AS n FROM hanzo.events WHERE tenant_id = ?", "acme")
 				_ = c.Exec(context.Background(), "INSERT INTO hanzo.events (tenant_id) VALUES (?)", "acme")
 			}
-		}()
+		})
 	}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		_ = c.Close()
-	}()
+	})
 	wg.Wait()
 
 	if c.Ready() {

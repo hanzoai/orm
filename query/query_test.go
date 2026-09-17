@@ -44,11 +44,11 @@ func TestAliasIdentity(t *testing.T) {
 	_ = dbFrom
 
 	// reflect.Type equality confirms the alias is identity (same go type).
-	if reflect.TypeOf(dbx.HashExp{}) != reflect.TypeOf(query.HashExp{}) {
+	if reflect.TypeFor[dbx.HashExp]() != reflect.TypeFor[query.HashExp]() {
 		t.Errorf("HashExp alias identity broken: %v vs %v",
-			reflect.TypeOf(dbx.HashExp{}), reflect.TypeOf(query.HashExp{}))
+			reflect.TypeFor[dbx.HashExp](), reflect.TypeFor[query.HashExp]())
 	}
-	if reflect.TypeOf(dbx.Params{}) != reflect.TypeOf(query.Params{}) {
+	if reflect.TypeFor[dbx.Params]() != reflect.TypeFor[query.Params]() {
 		t.Errorf("Params alias identity broken")
 	}
 }

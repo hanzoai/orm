@@ -52,7 +52,7 @@ func TestBuilder_Reset(t *testing.T) {
 }
 
 func TestBuildIn(t *testing.T) {
-	c := buildIn("status", []interface{}{"active", "pending"})
+	c := buildIn("status", []any{"active", "pending"})
 	if c.query != "status IN (?, ?)" {
 		t.Errorf("got %q", c.query)
 	}
@@ -70,7 +70,7 @@ func TestBuildIn_Empty(t *testing.T) {
 
 func TestBuildIn_SliceArg(t *testing.T) {
 	// xorm passes a single []string as one arg; flattenArgs should expand it
-	c := buildIn("id", []interface{}{[]string{"a", "b", "c"}})
+	c := buildIn("id", []any{[]string{"a", "b", "c"}})
 	if c.query != "id IN (?, ?, ?)" {
 		t.Errorf("got %q", c.query)
 	}
@@ -80,7 +80,7 @@ func TestBuildIn_SliceArg(t *testing.T) {
 }
 
 func TestBuildNotIn(t *testing.T) {
-	c := buildNotIn("role", []interface{}{"admin"})
+	c := buildNotIn("role", []any{"admin"})
 	if c.query != "role NOT IN (?)" {
 		t.Errorf("got %q", c.query)
 	}
@@ -148,9 +148,9 @@ func TestReplacePlaceholders(t *testing.T) {
 func TestBuildConditions_Mixed(t *testing.T) {
 	b := NewBuilder("sqlite3")
 	conds := []condition{
-		{query: "name = ?", args: []interface{}{"alice"}},
-		{query: "age > ?", args: []interface{}{25}},
-		{query: "role = ?", args: []interface{}{"admin"}, or: true},
+		{query: "name = ?", args: []any{"alice"}},
+		{query: "age > ?", args: []any{25}},
+		{query: "role = ?", args: []any{"admin"}, or: true},
 	}
 
 	buildConditions(b, conds)
@@ -162,21 +162,21 @@ func TestBuildConditions_Mixed(t *testing.T) {
 }
 
 func TestFlattenArgs_IntSlice(t *testing.T) {
-	args := flattenArgs([]interface{}{[]int{1, 2, 3}})
+	args := flattenArgs([]any{[]int{1, 2, 3}})
 	if len(args) != 3 {
 		t.Errorf("len: got %d, want 3", len(args))
 	}
 }
 
 func TestFlattenArgs_Int64Slice(t *testing.T) {
-	args := flattenArgs([]interface{}{[]int64{10, 20}})
+	args := flattenArgs([]any{[]int64{10, 20}})
 	if len(args) != 2 {
 		t.Errorf("len: got %d, want 2", len(args))
 	}
 }
 
 func TestFlattenArgs_NoFlatten(t *testing.T) {
-	args := flattenArgs([]interface{}{"a", "b"})
+	args := flattenArgs([]any{"a", "b"})
 	if len(args) != 2 {
 		t.Errorf("len: got %d, want 2", len(args))
 	}

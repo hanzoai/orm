@@ -30,12 +30,12 @@ type AfterCreateHook interface {
 
 // BeforeUpdateHook is called before entity update.
 type BeforeUpdateHook interface {
-	BeforeUpdate(prev interface{}) error
+	BeforeUpdate(prev any) error
 }
 
 // AfterUpdateHook is called after entity update.
 type AfterUpdateHook interface {
-	AfterUpdate(prev interface{}) error
+	AfterUpdate(prev any) error
 }
 
 // BeforeDeleteHook is called before entity deletion.
@@ -261,7 +261,7 @@ func (m *Model) Create(ctx context.Context) error {
 
 // Update updates an existing entity.
 func (m *Model) Update(ctx context.Context) error {
-	var prev interface{}
+	var prev any
 	if _, ok := m.entity.(BeforeUpdateHook); ok {
 		prev = m.clone()
 	} else if _, ok := m.entity.(AfterUpdateHook); ok {
@@ -347,7 +347,7 @@ func (m *Model) ModelQuery() Query {
 }
 
 // clone creates a shallow copy via JSON marshal/unmarshal.
-func (m *Model) clone() interface{} {
+func (m *Model) clone() any {
 	data, err := json.Marshal(m.entity)
 	if err != nil {
 		return nil

@@ -2,6 +2,7 @@ package orm
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	kv "github.com/hanzokv/go/v9"
@@ -63,11 +64,12 @@ func NewKVCacheFromClient(client *kv.Client, prefix string) *KVCache {
 }
 
 func (c *KVCache) key(parts ...string) string {
-	k := c.prefix
+	var k strings.Builder
+	k.WriteString(c.prefix)
 	for _, p := range parts {
-		k += ":" + p
+		k.WriteString(":" + p)
 	}
-	return k
+	return k.String()
 }
 
 func (c *KVCache) GetEntity(ctx context.Context, kind, id string) ([]byte, bool, error) {

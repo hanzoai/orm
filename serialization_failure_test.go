@@ -24,7 +24,6 @@ func TestIsSerializationFailure_RetryableSQLiteErrors(t *testing.T) {
 		{"no_such_table", errors.New("no such table: missing"), false},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			if got := isSerializationFailure(c.err); got != c.want {
 				t.Errorf("isSerializationFailure(%q)=%v, want %v", c.err, got, c.want)

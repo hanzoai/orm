@@ -15,10 +15,10 @@ import (
 )
 
 // PK represents a composite primary key, matching xorm's core.PK.
-type PK []interface{}
+type PK []any
 
 // scanValue converts a database value to the target Go type.
-func scanValue(dbVal interface{}, target reflect.Value) error {
+func scanValue(dbVal any, target reflect.Value) error {
 	if dbVal == nil {
 		target.Set(reflect.Zero(target.Type()))
 		return nil
@@ -27,7 +27,7 @@ func scanValue(dbVal interface{}, target reflect.Value) error {
 	targetType := target.Type()
 
 	// Handle pointer types
-	if targetType.Kind() == reflect.Ptr {
+	if targetType.Kind() == reflect.Pointer {
 		if dbVal == nil {
 			target.Set(reflect.Zero(targetType))
 			return nil
@@ -41,7 +41,7 @@ func scanValue(dbVal interface{}, target reflect.Value) error {
 	}
 
 	// Handle time.Time
-	if targetType == reflect.TypeOf(time.Time{}) {
+	if targetType == reflect.TypeFor[time.Time]() {
 		return scanTime(dbVal, target)
 	}
 
@@ -56,7 +56,7 @@ func scanValue(dbVal interface{}, target reflect.Value) error {
 }
 
 // scanTime converts a database value to time.Time.
-func scanTime(dbVal interface{}, target reflect.Value) error {
+func scanTime(dbVal any, target reflect.Value) error {
 	switch v := dbVal.(type) {
 	case time.Time:
 		target.Set(reflect.ValueOf(v))
@@ -92,7 +92,7 @@ func scanTime(dbVal interface{}, target reflect.Value) error {
 // scanJSON deserializes a JSON string/bytes into a complex type.
 // This is where the xorm whitespace bug is fixed — we always use
 // standard json.Unmarshal which handles all valid JSON correctly.
-func scanJSON(dbVal interface{}, target reflect.Value) error {
+func scanJSON(dbVal any, target reflect.Value) error {
 	var data []byte
 
 	switch v := dbVal.(type) {
@@ -126,7 +126,7 @@ func scanJSON(dbVal interface{}, target reflect.Value) error {
 }
 
 // scanScalar converts database scalar values.
-func scanScalar(dbVal interface{}, target reflect.Value) error {
+func scanScalar(dbVal any, target reflect.Value) error {
 	switch target.Kind() {
 	case reflect.String:
 		target.SetString(asString(dbVal))
@@ -175,7 +175,7 @@ func scanScalar(dbVal interface{}, target reflect.Value) error {
 	return fmt.Errorf("engine: cannot convert %T to %s", dbVal, target.Type())
 }
 
-func asString(v interface{}) string {
+func asString(v any) string {
 	switch val := v.(type) {
 	case string:
 		return val
@@ -188,7 +188,7 @@ func asString(v interface{}) string {
 	}
 }
 
-func asBool(v interface{}) (bool, error) {
+func asBool(v any) (bool, error) {
 	switch val := v.(type) {
 	case bool:
 		return val, nil
@@ -207,7 +207,7 @@ func asBool(v interface{}) (bool, error) {
 	}
 }
 
-func asInt64(v interface{}) (int64, error) {
+func asInt64(v any) (int64, error) {
 	switch val := v.(type) {
 	case int64:
 		return val, nil
@@ -233,7 +233,7 @@ func asInt64(v interface{}) (int64, error) {
 	}
 }
 
-func asUint64(v interface{}) (uint64, error) {
+func asUint64(v any) (uint64, error) {
 	switch val := v.(type) {
 	case uint64:
 		return val, nil
@@ -254,7 +254,7 @@ func asUint64(v interface{}) (uint64, error) {
 	}
 }
 
-func asFloat64(v interface{}) (float64, error) {
+func asFloat64(v any) (float64, error) {
 	switch val := v.(type) {
 	case float64:
 		return val, nil
@@ -277,7 +277,7 @@ func asFloat64(v interface{}) (float64, error) {
 
 // marshalJSON serializes a Go value to JSON for storage.
 // Always produces compact JSON without trailing whitespace.
-func marshalJSON(v interface{}) (string, error) {
+func marshalJSON(v any) (string, error) {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return "", err

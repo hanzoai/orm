@@ -66,7 +66,7 @@ func (m *Model[T]) SetNamespace(ns string) {
 func (m Model[T]) Kind() string {
 	var zero T
 	typ := reflect.TypeOf(zero)
-	if typ.Kind() == reflect.Ptr {
+	if typ.Kind() == reflect.Pointer {
 		typ = typ.Elem()
 	}
 	meta, ok := LookupType(typ)
@@ -171,7 +171,7 @@ func (m *Model[T]) self() *T {
 	// We use unsafe pointer arithmetic equivalent via reflect.
 	// The Model[T] is embedded in T, so we can recover *T from *Model[T].
 	return (*T)(reflect.NewAt(
-		reflect.TypeOf((*T)(nil)).Elem(),
+		reflect.TypeFor[T](),
 		reflect.ValueOf(m).UnsafePointer(),
 	).UnsafePointer())
 }
@@ -474,12 +474,12 @@ type Meta struct {
 	Kind        string
 	Type        reflect.Type // the concrete struct type T (not *T)
 	StringKey   bool
-	ParentFn    func(DB) Key          // optional parent key factory
-	InitFn      func(DB, interface{}) // optional custom init
-	DefaultsFn  func(interface{})     // optional custom defaults
-	Defaults    map[string]string     // field name → default value from tags
-	Serialized  map[string]string     // JSON field name → underscore field name
-	CacheConfig *CacheConfig          // per-model cache settings (nil = use global)
+	ParentFn    func(DB) Key      // optional parent key factory
+	InitFn      func(DB, any)     // optional custom init
+	DefaultsFn  func(any)         // optional custom defaults
+	Defaults    map[string]string // field name → default value from tags
+	Serialized  map[string]string // JSON field name → underscore field name
+	CacheConfig *CacheConfig      // per-model cache settings (nil = use global)
 }
 
 // CacheConfig controls per-model caching behavior.
@@ -502,7 +502,7 @@ type serializedField struct {
 func Register[T any](kind string, opts ...Option[T]) {
 	var zero T
 	typ := reflect.TypeOf(zero)
-	if typ.Kind() == reflect.Ptr {
+	if typ.Kind() == reflect.Pointer {
 		typ = typ.Elem()
 	}
 
@@ -553,7 +553,7 @@ func Lookup(kind string) (*Meta, bool) {
 
 // LookupType returns the metadata for the given type.
 func LookupType(typ reflect.Type) (*Meta, bool) {
-	if typ.Kind() == reflect.Ptr {
+	if typ.Kind() == reflect.Pointer {
 		typ = typ.Elem()
 	}
 	models.mu.RLock()
@@ -582,18 +582,17 @@ func Kinds() []string {
 // Legacy detection: if a field has `datastore:"-"` and a sibling Foo_ exists,
 // it is treated as serialized automatically.
 func parseStructTags(typ reflect.Type, meta *Meta) {
-	if typ.Kind() == reflect.Ptr {
+	if typ.Kind() == reflect.Pointer {
 		typ = typ.Elem()
 	}
 
 	// Build a set of field names for sibling detection
 	fieldNames := make(map[string]bool, typ.NumField())
-	for i := 0; i < typ.NumField(); i++ {
-		fieldNames[typ.Field(i).Name] = true
+	for field := range typ.Fields() {
+		fieldNames[field.Name] = true
 	}
 
-	for i := 0; i < typ.NumField(); i++ {
-		f := typ.Field(i)
+	for f := range typ.Fields() {
 
 		// Skip unexported
 		if !f.IsExported() {
@@ -603,11 +602,11 @@ func parseStructTags(typ reflect.Type, meta *Meta) {
 		// Parse orm tag
 		ormTag := f.Tag.Get("orm")
 		if ormTag != "" {
-			for _, part := range strings.Split(ormTag, ",") {
+			for part := range strings.SplitSeq(ormTag, ",") {
 				part = strings.TrimSpace(part)
 
-				if strings.HasPrefix(part, "default:") {
-					meta.Defaults[f.Name] = strings.TrimPrefix(part, "default:")
+				if after, ok := strings.CutPrefix(part, "default:"); ok {
+					meta.Defaults[f.Name] = after
 				}
 
 				if part == "serialize" {

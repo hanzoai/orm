@@ -6,7 +6,7 @@ import "reflect"
 type Type = reflect.Type
 
 // Ptr is reflect.Ptr.
-const Ptr = reflect.Ptr
+const Ptr = reflect.Pointer
 
 // Standard reflect function aliases.
 var (

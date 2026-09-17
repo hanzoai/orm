@@ -135,7 +135,7 @@ func TestScanJSON_CompactJSON(t *testing.T) {
 func TestScanJSON_Map(t *testing.T) {
 	input := `{"key": "value", "count": 42}`
 
-	var result map[string]interface{}
+	var result map[string]any
 	v := reflect.ValueOf(&result).Elem()
 
 	if err := scanJSON(input, v); err != nil {

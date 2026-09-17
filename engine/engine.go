@@ -121,10 +121,10 @@ func (e *Engine) ShowSQL(show bool) {
 
 // Sync2 synchronizes table schemas from struct definitions.
 // Creates tables if they don't exist, adds missing columns.
-func (e *Engine) Sync2(beans ...interface{}) error {
+func (e *Engine) Sync2(beans ...any) error {
 	for _, bean := range beans {
 		typ := reflect.TypeOf(bean)
-		if typ.Kind() == reflect.Ptr {
+		if typ.Kind() == reflect.Pointer {
 			typ = typ.Elem()
 		}
 
@@ -193,18 +193,18 @@ func (e *Engine) syncTable(table *TableMeta) error {
 // tableExists checks if a table exists.
 func (e *Engine) tableExists(ctx context.Context, name string) (bool, error) {
 	var query string
-	var args []interface{}
+	var args []any
 
 	switch e.driver {
 	case "postgres":
 		query = `SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = $1)`
-		args = []interface{}{name}
+		args = []any{name}
 	case "sqlite3":
 		query = `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)`
-		args = []interface{}{name}
+		args = []any{name}
 	case "mysql":
 		query = `SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = ?)`
-		args = []interface{}{name}
+		args = []any{name}
 	default:
 		return false, fmt.Errorf("unsupported driver: %s", e.driver)
 	}
@@ -217,17 +217,17 @@ func (e *Engine) tableExists(ctx context.Context, name string) (bool, error) {
 // existingColumns returns a set of column names for a table.
 func (e *Engine) existingColumns(ctx context.Context, name string) (map[string]bool, error) {
 	var query string
-	var args []interface{}
+	var args []any
 
 	switch e.driver {
 	case "postgres":
 		query = `SELECT column_name FROM information_schema.columns WHERE table_name = $1`
-		args = []interface{}{name}
+		args = []any{name}
 	case "sqlite3":
 		query = fmt.Sprintf(`PRAGMA table_info(%s)`, quoteIdent(name, e.driver))
 	case "mysql":
 		query = `SELECT column_name FROM information_schema.columns WHERE table_name = ?`
-		args = []interface{}{name}
+		args = []any{name}
 	default:
 		return nil, fmt.Errorf("unsupported driver: %s", e.driver)
 	}
@@ -275,9 +275,9 @@ func (e *Engine) Table(name string) *TableMeta {
 
 // tableMeta resolves the table metadata for a bean.
 // It first checks the cache, then parses from the type.
-func (e *Engine) tableMeta(bean interface{}) *TableMeta {
+func (e *Engine) tableMeta(bean any) *TableMeta {
 	typ := reflect.TypeOf(bean)
-	if typ.Kind() == reflect.Ptr {
+	if typ.Kind() == reflect.Pointer {
 		typ = typ.Elem()
 	}
 
@@ -307,57 +307,57 @@ func (e *Engine) NewSession() *Session {
 }
 
 // Where starts a conditional query (convenience for Engine.NewSession().Where()).
-func (e *Engine) Where(query string, args ...interface{}) *Session {
+func (e *Engine) Where(query string, args ...any) *Session {
 	return e.NewSession().Where(query, args...)
 }
 
 // ID starts a query by primary key.
-func (e *Engine) ID(pk interface{}) *Session {
+func (e *Engine) ID(pk any) *Session {
 	return e.NewSession().ID(pk)
 }
 
 // SQL starts a raw SQL query.
-func (e *Engine) SQL(query string, args ...interface{}) *Session {
+func (e *Engine) SQL(query string, args ...any) *Session {
 	return e.NewSession().SQL(query, args...)
 }
 
 // Get retrieves a single record by primary key conditions on the bean.
-func (e *Engine) Get(bean interface{}) (bool, error) {
+func (e *Engine) Get(bean any) (bool, error) {
 	return e.NewSession().Get(bean)
 }
 
 // Find retrieves multiple records.
-func (e *Engine) Find(beans interface{}, conds ...interface{}) error {
+func (e *Engine) Find(beans any, conds ...any) error {
 	return e.NewSession().Find(beans, conds...)
 }
 
 // Insert inserts one or more records.
-func (e *Engine) Insert(beans ...interface{}) (int64, error) {
+func (e *Engine) Insert(beans ...any) (int64, error) {
 	return e.NewSession().Insert(beans...)
 }
 
 // Update updates records.
-func (e *Engine) Update(bean interface{}, conds ...interface{}) (int64, error) {
+func (e *Engine) Update(bean any, conds ...any) (int64, error) {
 	return e.NewSession().Update(bean, conds...)
 }
 
 // Delete deletes records.
-func (e *Engine) Delete(bean interface{}) (int64, error) {
+func (e *Engine) Delete(bean any) (int64, error) {
 	return e.NewSession().Delete(bean)
 }
 
 // Count counts matching records.
-func (e *Engine) Count(bean ...interface{}) (int64, error) {
+func (e *Engine) Count(bean ...any) (int64, error) {
 	return e.NewSession().Count(bean...)
 }
 
 // Exec executes raw SQL.
-func (e *Engine) Exec(sqlOrArgs ...interface{}) (sql.Result, error) {
+func (e *Engine) Exec(sqlOrArgs ...any) (sql.Result, error) {
 	return e.NewSession().Exec(sqlOrArgs...)
 }
 
 // Query executes raw SQL and returns rows.
-func (e *Engine) Query(sqlOrArgs ...interface{}) ([]map[string][]byte, error) {
+func (e *Engine) Query(sqlOrArgs ...any) ([]map[string][]byte, error) {
 	return e.NewSession().QueryBytes(sqlOrArgs...)
 }
 
@@ -368,7 +368,7 @@ func (e *Engine) Ping() error {
 
 // Transaction runs fn inside a transaction. If fn returns nil the tx
 // is committed; otherwise it is rolled back.
-func (e *Engine) Transaction(fn func(*Session) (interface{}, error)) (interface{}, error) {
+func (e *Engine) Transaction(fn func(*Session) (any, error)) (any, error) {
 	sess := e.NewSession()
 	if err := sess.Begin(); err != nil {
 		return nil, err

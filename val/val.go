@@ -6,12 +6,13 @@ import (
 	"fmt"
 	"log"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 )
 
 // ValidatorFunction is a function that validates a value.
-type ValidatorFunction interface{}
+type ValidatorFunction any
 
 // Validator validates struct fields using registered validation functions.
 type Validator struct {
@@ -27,7 +28,7 @@ func New() *Validator {
 
 // depointer dereferences all pointer layers.
 func depointer(value reflect.Value) reflect.Value {
-	for value.Kind() == reflect.Ptr {
+	for value.Kind() == reflect.Pointer {
 		value = reflect.Indirect(value)
 	}
 	return value
@@ -35,8 +36,8 @@ func depointer(value reflect.Value) reflect.Value {
 
 // traverseAddts traverses dot notation field paths.
 func traverseAddts(value reflect.Value, field string) reflect.Value {
-	fields := strings.Split(field, ".")
-	for _, field := range fields {
+	fields := strings.SplitSeq(field, ".")
+	for field := range fields {
 		switch value.Kind() {
 		case reflect.Struct:
 			value = depointer(value.FieldByName(field))
@@ -61,7 +62,7 @@ func (v *Validator) Check(field string) *Validator {
 }
 
 // Exec runs all validation functions and returns any errors.
-func (v *Validator) Exec(value interface{}) []error {
+func (v *Validator) Exec(value any) []error {
 	v.Value = depointer(reflect.ValueOf(value))
 
 	errs := make([]error, 0)
@@ -104,7 +105,7 @@ func (v *Validator) Add(fn ValidatorFunction) *Validator {
 
 // Exists validates that the field is not empty.
 func (v *Validator) Exists() *Validator {
-	return v.Add(func(i interface{}) error {
+	return v.Add(func(i any) error {
 		switch value := i.(type) {
 		case string:
 			if len(value) > 0 {
@@ -141,10 +142,8 @@ func (v *Validator) MinLength(minLength int) *Validator {
 // Matches validates the field matches one of the given strings.
 func (v *Validator) Matches(strs ...string) *Validator {
 	return v.Add(func(value string) error {
-		for _, str := range strs {
-			if str == value {
-				return nil
-			}
+		if slices.Contains(strs, value) {
+			return nil
 		}
 		if len(strs) == 1 {
 			return errors.New(fmt.Sprintf("Field must equal '%v', not '%v'.", strs[0], value))

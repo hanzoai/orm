@@ -11,9 +11,9 @@ import (
 // For each pair in Meta.Serialized:
 //   - Marshal the JSON field value to a JSON string
 //   - Store the string in the underscore field
-func SerializeFields(entity interface{}) error {
+func SerializeFields(entity any) error {
 	val := reflect.ValueOf(entity)
-	if val.Kind() == reflect.Ptr {
+	if val.Kind() == reflect.Pointer {
 		val = val.Elem()
 	}
 	typ := val.Type()
@@ -49,9 +49,9 @@ func SerializeFields(entity interface{}) error {
 // For each pair in Meta.Serialized:
 //   - Read the string from the underscore field
 //   - Unmarshal into the JSON field
-func DeserializeFields(entity interface{}) error {
+func DeserializeFields(entity any) error {
 	val := reflect.ValueOf(entity)
-	if val.Kind() == reflect.Ptr {
+	if val.Kind() == reflect.Pointer {
 		val = val.Elem()
 	}
 	typ := val.Type()
