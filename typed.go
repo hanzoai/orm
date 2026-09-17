@@ -217,3 +217,34 @@ func (t *Typed[T]) Count(ctx context.Context) (int64, error) {
 	}
 	return n, nil
 }
+
+// Map executes the query via All(ctx) and transforms each row T into U using fn.
+// This leverages Go 1.27 generic methods: Typed[T] declares method type parameter U.
+func (t *Typed[T]) Map[U any](ctx context.Context, fn func(T) U) ([]U, error) {
+	rows, err := t.All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	out := make([]U, len(rows))
+	for i, r := range rows {
+		out[i] = fn(r)
+	}
+	return out, nil
+}
+
+// OneMap executes the query via One(ctx) and transforms the bound *T row into *U using fn.
+// If no row is found, it returns ErrNotFound.
+func (t *Typed[T]) OneMap[U any](ctx context.Context, fn func(T) U) (*U, error) {
+	row, err := t.One(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if row == nil {
+		return nil, ErrNotFound
+	}
+	res := fn(*row)
+	return &res, nil
+}

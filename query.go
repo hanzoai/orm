@@ -159,3 +159,20 @@ func (q *ModelQuery[T]) IdExists(id string) (Key, bool, error) {
 func (q *ModelQuery[T]) Inner() Query {
 	return q.query
 }
+
+// Map executes GetAll and transforms each retrieved *T into U using fn.
+// This leverages Go 1.27 generic methods: ModelQuery[T] declares method type parameter U.
+func (q *ModelQuery[T]) Map[U any](ctx context.Context, fn func(*T) U) ([]U, error) {
+	items, err := q.GetAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return nil, nil
+	}
+	out := make([]U, len(items))
+	for i, item := range items {
+		out[i] = fn(item)
+	}
+	return out, nil
+}
