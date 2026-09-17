@@ -919,6 +919,9 @@ func (q *sqliteQuery) End(cursor Cursor) Query {
 }
 
 func (q *sqliteQuery) GetAll(ctx context.Context, dst any) ([]Key, error) {
+	if q.limit <= 0 {
+		q.limit = MaxGetAll
+	}
 	query, args := q.buildSQL()
 
 	var rows *sql.Rows

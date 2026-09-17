@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	ormdb "github.com/hanzoai/orm/db"
 )
 
 // Move copies entities from one store to another.
@@ -40,23 +42,33 @@ func Move(ctx context.Context, src, dst DB, kinds ...string) (Moved, error) {
 	}
 	moved := Moved{ByKind: map[string]int{}}
 	for _, kind := range kinds {
-		var raw []json.RawMessage
-		keys, err := src.Query(kind).GetAll(ctx, &raw)
-		if err != nil {
-			return moved, fmt.Errorf("orm: Move: reading %q: %w", kind, err)
-		}
-		if len(keys) != len(raw) {
-			return moved, fmt.Errorf("orm: Move: %q returned %d keys for %d entities", kind, len(keys), len(raw))
-		}
-		for i, k := range keys {
-			// The key is rebuilt on the DESTINATION, because a Key carries the
-			// store that made it; handing a source key to another store is how a
-			// move silently writes nowhere.
-			if _, err := dst.Put(ctx, dst.NewKey(kind, k.StringID(), k.IntID(), nil), &raw[i]); err != nil {
-				return moved, fmt.Errorf("orm: Move: writing %s/%s: %w", kind, k.StringID(), err)
+		// Page the read. A bare GetAll is bounded by ormdb.MaxGetAll — the bound that
+		// keeps one response from growing with the store — and a move is not a
+		// response: it is the whole kind, so it asks page by page. Put upserts,
+		// so a row read twice costs nothing.
+		for off := 0; ; {
+			var raw []json.RawMessage
+			keys, err := src.Query(kind).Offset(off).Limit(ormdb.MaxGetAll).GetAll(ctx, &raw)
+			if err != nil {
+				return moved, fmt.Errorf("orm: Move: reading %q: %w", kind, err)
 			}
-			moved.ByKind[kind]++
-			moved.Total++
+			if len(keys) != len(raw) {
+				return moved, fmt.Errorf("orm: Move: %q returned %d keys for %d entities", kind, len(keys), len(raw))
+			}
+			for i, k := range keys {
+				// The key is rebuilt on the DESTINATION, because a Key carries the
+				// store that made it; handing a source key to another store is how a
+				// move silently writes nowhere.
+				if _, err := dst.Put(ctx, dst.NewKey(kind, k.StringID(), k.IntID(), nil), &raw[i]); err != nil {
+					return moved, fmt.Errorf("orm: Move: writing %s/%s: %w", kind, k.StringID(), err)
+				}
+				moved.ByKind[kind]++
+				moved.Total++
+			}
+			if len(keys) < ormdb.MaxGetAll {
+				break
+			}
+			off += ormdb.MaxGetAll
 		}
 	}
 	return moved, nil

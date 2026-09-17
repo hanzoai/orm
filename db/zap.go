@@ -689,6 +689,9 @@ func (q *zapQuery) Start(cursor Cursor) Query          { return q }
 func (q *zapQuery) End(cursor Cursor) Query            { return q }
 
 func (q *zapQuery) GetAll(ctx context.Context, dst any) ([]Key, error) {
+	if q.limit <= 0 {
+		q.limit = MaxGetAll
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}

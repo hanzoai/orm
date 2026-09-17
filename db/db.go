@@ -207,6 +207,13 @@ type Key interface {
 }
 
 // Query provides a fluent interface for querying entities.
+// MaxGetAll bounds a GetAll that states no limit. GetAll is the "hand me a
+// slice" read, and a slice with no bound grows with the store — the store is
+// older and bigger than any process reading it. A caller that needs more than
+// MaxGetAll rows streams with Run/Next instead; that path is unbounded by
+// design, because an iterator that stops asking is a reader that is done.
+const MaxGetAll = 10_000
+
 type Query interface {
 	Filter(filterStr string, value any) Query
 	FilterField(fieldPath string, op string, value any) Query
