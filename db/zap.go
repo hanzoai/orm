@@ -138,7 +138,7 @@ func (z *ZapDB) call(ctx context.Context, path string, body []byte) (uint32, []b
 	req.Header.SetContentType("application/json")
 	req.SetBody(body)
 
-	if err := z.transport.Do(req, resp); err != nil {
+	if err := z.transport.DoContext(ctx, req, resp); err != nil {
 		return 0, nil, fmt.Errorf("db: zap call %s: %w", path, err)
 	}
 

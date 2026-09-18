@@ -9,7 +9,7 @@ require (
 	github.com/hanzoai/xorm v1.4.5
 	github.com/hanzokv/go/v9 v9.22.0
 	github.com/valyala/fasthttp v1.72.0
-	github.com/zap-proto/http v0.3.0
+	github.com/zap-proto/http v0.3.11
 )
 
 require (

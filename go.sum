@@ -123,8 +123,8 @@ github.com/yuin/goldmark v1.1.27/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9de
 github.com/yuin/goldmark v1.2.1/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9decYSb74=
 github.com/zap-proto/go v1.3.0 h1:S3rMoawwhH/BbSZ4G8zG05hJoQnMSMDPzIq75diCTqE=
 github.com/zap-proto/go v1.3.0/go.mod h1:914SNGTH6Rv3Yu1MweWJBPEN8FZlo5C39QyhaB0C7Q0=
-github.com/zap-proto/http v0.3.0 h1:l7DvlngiYqmzNY6fzyRYw2ZIAhF35FqwOe6mvAOqpMg=
-github.com/zap-proto/http v0.3.0/go.mod h1:UYfGhDDCetgxs65XSev8Lpf65COg5vKQK+cWwZGh4zQ=
+github.com/zap-proto/http v0.3.11 h1:LdaTSQtxcHRooQMwz0bZGjw+7IuONEwCG3QtLH/fHr0=
+github.com/zap-proto/http v0.3.11/go.mod h1:Gw4Kn/PpF1P+CHJyBQQ3aoFDI3P4p0wsjURFwjPnHzE=
 github.com/zeebo/xxh3 v1.0.2 h1:xZmwmqxHZA8AI603jOQ0tMqmBr9lPeFwGg6d+xy9DC0=
 github.com/zeebo/xxh3 v1.0.2/go.mod h1:5NWz9Sef7zIDm2JHfFlcQvNekmcEl9ekUZQQKCYaDcA=
 go.mongodb.org/mongo-driver v1.11.4/go.mod h1:PTSz5yu21bkT/wXpkS7WR5f0ddqw5quethTUn9WM+2g=
