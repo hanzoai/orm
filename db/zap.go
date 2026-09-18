@@ -326,6 +326,12 @@ func (z *ZapDB) sqlGet(ctx context.Context, key Key, dst any) error {
 // stored the entity and left every reader — all of which ask for deleted = false —
 // unable to see it. Same rule and same kind guard as sqliteQuery's putSQL, because
 // it is the same table under a different dialect.
+//
+// Every argument reaches the server as text — the listener binds them TEXTOID,
+// whatever JSON type they were sent as — so an argument going into a column of
+// another type says which type that is. Without the casts PostgreSQL refuses
+// the statement outright: "column data is of type jsonb but expression is of
+// type text", which is a 500 on every write and no clue as to which word.
 func (z *ZapDB) sqlPut(ctx context.Context, key Key, src any) (Key, error) {
 	data, err := json.Marshal(src)
 	if err != nil {
@@ -334,8 +340,8 @@ func (z *ZapDB) sqlPut(ctx context.Context, key Key, src any) (Key, error) {
 	now := timeNow().Format(time.RFC3339)
 	body, _ := json.Marshal(map[string]any{
 		"sql": fmt.Sprintf(`INSERT INTO %s (id, kind, data, created_at, updated_at, deleted)
-			VALUES ($1, $2, $3, $4, $5, false)
-			ON CONFLICT (id) DO UPDATE SET data = $3, updated_at = $5,
+			VALUES ($1, $2, $3::jsonb, $4::timestamptz, $5::timestamptz, false)
+			ON CONFLICT (id) DO UPDATE SET data = $3::jsonb, updated_at = $5::timestamptz,
 				deleted = CASE WHEN %s.kind = $2 THEN false ELSE %s.deleted END`,
 			z.cfg.Collection, z.cfg.Collection, z.cfg.Collection),
 		"args": []any{key.StringID(), key.Kind(), string(data), now, now},
@@ -369,9 +375,9 @@ func (z *ZapDB) sqlCreateIfAbsent(ctx context.Context, key Key, src any) (bool, 
 	now := timeNow().Format(time.RFC3339)
 	body, _ := json.Marshal(map[string]any{
 		"sql": fmt.Sprintf(`INSERT INTO %s (id, kind, data, created_at, updated_at, deleted)
-			VALUES ($1, $2, $3, $4, $5, false)
+			VALUES ($1, $2, $3::jsonb, $4::timestamptz, $5::timestamptz, false)
 			ON CONFLICT (id) DO UPDATE SET
-				data = $3, updated_at = $5, deleted = false
+				data = $3::jsonb, updated_at = $5::timestamptz, deleted = false
 			WHERE %s.deleted = true AND %s.kind = $2
 			RETURNING id`, z.cfg.Collection, z.cfg.Collection, z.cfg.Collection),
 		"args": []any{key.StringID(), key.Kind(), string(data), now, now},
@@ -399,7 +405,7 @@ func zapRowsReturned(resp []byte) (bool, error) {
 
 func (z *ZapDB) sqlDelete(ctx context.Context, key Key) error {
 	body, _ := json.Marshal(map[string]any{
-		"sql":  fmt.Sprintf("UPDATE %s SET deleted = true, updated_at = $1 WHERE id = $2 AND kind = $3", z.cfg.Collection),
+		"sql":  fmt.Sprintf("UPDATE %s SET deleted = true, updated_at = $1::timestamptz WHERE id = $2 AND kind = $3", z.cfg.Collection),
 		"args": []any{timeNow().Format(time.RFC3339), key.StringID(), key.Kind()},
 	})
 	_, _, err := z.call(ctx, "/exec", body)
