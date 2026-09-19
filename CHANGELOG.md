@@ -5,6 +5,50 @@ All notable changes to `github.com/hanzoai/orm` are documented here.
 The format is loosely [Keep a Changelog](https://keepachangelog.com/) and
 versioning follows [SemVer](https://semver.org/).
 
+## v0.6.36
+
+### Added
+
+- **`orm/tenant` — shared tables, one org per statement, on SQLite and
+  PostgreSQL.** Tenancy is a column: every table carries `org_id` first, leading
+  its primary key and every index, and the org comes from the context through
+  the resolver the store is opened with — no call takes one as an argument.
+  - The builder refuses a statement whose context names no org before any SQL
+    exists; constrains every table a statement names — the one it reads in
+    WHERE, every join in its ON, every subquery; takes an insert's org from the
+    context and refuses a row naming another; never lets an update move a row
+    between orgs; and leads every upsert's conflict target with `org_id`.
+    Conditions are a closed set of constructors and identifiers are validated,
+    so there is no raw SQL for a caller to reach past the constraint with.
+  - On PostgreSQL the migrator also enables and forces row-level security with a
+    tenant policy (`org_id = app.org`) and a platform policy, and proves the
+    table on every open: owner, forced RLS, exactly those two policies, row
+    privileges and no TRUNCATE, key and every index leading with `org_id`. Each
+    statement runs in a transaction that sets its role and `app.org`, both
+    transaction-local. The login is NOINHERIT and holds no privilege of its own;
+    `Open` refuses a superuser, BYPASSRLS, an inheriting login, or roles other
+    than the ones `Provision` makes.
+  - `DB.Platform(ctx, why)` is the one cross-org entry: audited, its own role,
+    refused from a context that names an org — at entry and on every statement.
+  - `DB.Tx` is SERIALIZABLE on PostgreSQL and reruns on a serialization
+    conflict, so a read-modify-write written for a single-connection SQLite file
+    stays atomic. `ReadOnly(ctx)` routes a read to the replica.
+  - One suite, both engines: `tenant` runs every behaviour against SQLite and a
+    real PostgreSQL started for the test binary (`internal/pgtest`); row-level
+    security is held on its own with raw SQL on the store's pool. A machine with
+    no PostgreSQL says so by name.
+
+### Fixed
+
+- **`Typed[T].Count` counts the rows its query reads.** It swapped the
+  projection for `COUNT(*)` and kept the rest, so an ordered query failed on
+  PostgreSQL ("must appear in the GROUP BY clause") and passed on SQLite, a
+  grouped one answered one group's count, and LIMIT and DISTINCT were ignored.
+  It now counts the query as a subquery, order dropped. Found by running the
+  relational tests on PostgreSQL, which they now do on every run.
+- `replicated/go.mod` was untidy against the root module (`zap-proto/http`), so
+  `cd replicated && go build ./...` — a CI gate — failed on main.
+
 ## v0.6.31
 
 ### Fixed
