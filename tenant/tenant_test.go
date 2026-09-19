@@ -603,3 +603,60 @@ func withDriver(b backend, cfg tenant.Config) tenant.Config {
 	cfg.Tenant = orgOf
 	return cfg
 }
+
+// A table keyed by org_id alone holds one row per org, and is upserted naming
+// no key; a table with a key refuses an upsert that names none.
+func TestOneRowPerOrg(t *testing.T) {
+	profile := tenant.Table{
+		Name:   "profile",
+		Fields: []tenant.Field{{Name: "name", Type: tenant.Text}, {Name: "created_at", Type: tenant.Int}},
+	}
+	type prof struct {
+		Name      string `db:"name"`
+		CreatedAt int64  `db:"created_at"`
+	}
+	each(t, func(t *testing.T, b backend) {
+		db := b.open(t, tenant.Config{Tables: []tenant.Table{profile, spaces}})
+		for _, org := range []string{"acme", "globex"} {
+			must(t, db.Upsert(as(org), "profile", prof{Name: org + " one", CreatedAt: 1}))
+			must(t, db.Upsert(as(org), "profile", prof{Name: org + " two", CreatedAt: 2}))
+		}
+		for _, org := range []string{"acme", "globex"} {
+			rows, err := db.Select[prof]("profile").All(as(org))
+			must(t, err)
+			if len(rows) != 1 || rows[0].Name != org+" two" {
+				t.Fatalf("%s's profile: %+v", org, rows)
+			}
+		}
+		created, err := db.CreateIfAbsent(as("acme"), "profile", prof{Name: "again"})
+		must(t, err)
+		if created {
+			t.Fatal("a second profile row was created for acme")
+		}
+		if err := db.Upsert(as("acme"), "spaces", space{ID: "x", Slug: "x"}); err == nil {
+			t.Fatal("an upsert naming no key ran on a table with one")
+		}
+	})
+}
+
+// Duplicate names a write refused for an existing key the same way on both
+// engines, so a store never reads an engine's error text.
+func TestDuplicateIsOnePredicate(t *testing.T) {
+	each(t, func(t *testing.T, b backend) {
+		db := openBoth(t, b)
+		must(t, db.Insert(as("acme"), "spaces", space{ID: "s1", Slug: "one"}))
+		for name, err := range map[string]error{
+			"primary key":  db.Insert(as("acme"), "spaces", space{ID: "s1", Slug: "other"}),
+			"unique index": db.Insert(as("acme"), "spaces", space{ID: "s2", Slug: "one"}),
+		} {
+			if !tenant.Duplicate(err) {
+				t.Errorf("%s: %v is not a Duplicate", name, err)
+			}
+		}
+		// The same key in another org is no duplicate at all.
+		must(t, db.Insert(as("globex"), "spaces", space{ID: "s1", Slug: "one"}))
+		if tenant.Duplicate(errors.New("tenant: something else")) || tenant.Duplicate(nil) {
+			t.Fatal("Duplicate matched an error that is not one")
+		}
+	})
+}

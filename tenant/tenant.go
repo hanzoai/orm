@@ -50,6 +50,7 @@ import (
 
 	"github.com/hanzoai/orm/dialect"
 	"github.com/hanzoai/orm/query"
+	"github.com/hanzoai/sqlite"
 )
 
 // Column is the tenant column every table carries first.
@@ -220,7 +221,7 @@ func (d *DB) Tx(ctx context.Context, fn func(*DB) error) error {
 		err := d.st.begin(ctx, d.st.primary, opts, d.platform, org, func(x *query.Tx) error {
 			return fn(&DB{st: d.st, platform: d.platform, tx: x, org: org})
 		})
-		if err == nil || attempt == maxAttempts || !conflict(err) {
+		if err == nil || attempt == maxAttempts || !retryable(err) {
 			return err
 		}
 		pause := time.Duration(attempt*attempt)*time.Millisecond + rand.N(5*time.Millisecond)
@@ -345,9 +346,20 @@ func (st *store) begin(ctx context.Context, db *query.DB, opts *sql.TxOptions, p
 	return x.Commit()
 }
 
-// conflict reports a PostgreSQL abort that running the transaction again can
+// Duplicate reports whether err is a write refused because a row with the same
+// key — primary or unique — already exists, whichever engine refused it. A store
+// maps it to "already exists" instead of reading an engine's error text.
+func Duplicate(err error) bool {
+	var coded interface{ SQLState() string }
+	if errors.As(err, &coded) && coded.SQLState() == "23505" {
+		return true
+	}
+	return sqlite.IsConstraintUnique(err) || sqlite.IsConstraintPrimaryKey(err)
+}
+
+// retryable reports a PostgreSQL abort that running the transaction again can
 // cure: a serialization failure or a deadlock.
-func conflict(err error) bool {
+func retryable(err error) bool {
 	var coded interface{ SQLState() string }
 	if !errors.As(err, &coded) {
 		return false

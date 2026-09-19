@@ -26,12 +26,10 @@ func (d *DB) Insert(ctx context.Context, table string, row any) error {
 // Upsert writes row into table, or updates every other column of the row
 // already holding the same key. key is the columns after org_id of the table's
 // primary key or of one of its unique indexes, so the conflict is always
-// within one org: one org's upsert cannot land on another org's row.
+// within one org: one org's upsert cannot land on another org's row. A table
+// whose key is org_id alone — one row per org — is upserted naming none.
 func (d *DB) Upsert(ctx context.Context, table string, row any, key ...string) error {
-	if len(key) == 0 {
-		return fmt.Errorf("tenant: upsert into %s names no key", table)
-	}
-	_, err := d.insert(ctx, table, row, key, true)
+	_, err := d.insert(ctx, table, row, conflict(key), true)
 	return err
 }
 
@@ -39,10 +37,16 @@ func (d *DB) Upsert(ctx context.Context, table string, row any, key ...string) e
 // and reports whether it wrote. The existing row is left as it was. key is as
 // for [DB.Upsert].
 func (d *DB) CreateIfAbsent(ctx context.Context, table string, row any, key ...string) (bool, error) {
-	if len(key) == 0 {
-		return false, fmt.Errorf("tenant: create in %s names no key", table)
+	return d.insert(ctx, table, row, conflict(key), false)
+}
+
+// conflict is key as a conflict target: never nil, so an empty key still means
+// "on conflict", with org_id as the whole target.
+func conflict(key []string) []string {
+	if key == nil {
+		return []string{}
 	}
-	return d.insert(ctx, table, row, key, false)
+	return key
 }
 
 // Update sets the columns in set on the rows of table where holds, and

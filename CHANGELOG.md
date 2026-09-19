@@ -5,6 +5,18 @@ All notable changes to `github.com/hanzoai/orm` are documented here.
 The format is loosely [Keep a Changelog](https://keepachangelog.com/) and
 versioning follows [SemVer](https://semver.org/).
 
+## v0.6.38
+
+### Added
+
+- **`tenant.Duplicate(err)`** — a write refused for an existing primary or
+  unique key, on either engine (SQLSTATE 23505, or SQLite's constraint codes).
+  A store maps "already exists" from this instead of an engine's error text,
+  which PostgreSQL and SQLite do not share.
+- **One row per org.** A table whose key is `org_id` alone is upserted, and
+  `CreateIfAbsent`-ed, naming no key; the conflict target is `org_id`. A table
+  with a key still refuses a write that names none.
+
 ## v0.6.37
 
 ### Changed
