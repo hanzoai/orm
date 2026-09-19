@@ -11,7 +11,7 @@ import (
 
 	_ "github.com/hanzoai/sqlite"
 
-	"github.com/hanzoai/orm/internal/pgtest"
+	"github.com/hanzoai/orm/pgtest"
 	"github.com/hanzoai/orm/tenant"
 )
 

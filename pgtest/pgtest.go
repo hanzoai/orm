@@ -9,6 +9,19 @@
 // When a machine has no server to find, Start says so instead of failing: a
 // suite reports the backend it did not reach by name, which is a fact a reader
 // can act on, and still runs everything else.
+//
+// A store built on orm/tenant runs its own tests on both engines with this —
+// start one server in TestMain, make its login with tenant.Provision, and open
+// the store on a schema of the test's own:
+//
+//	func TestMain(m *testing.M) {
+//		pg, why = pgtest.Start()
+//		code := m.Run()
+//		if pg != nil {
+//			pg.Stop()
+//		}
+//		os.Exit(code)
+//	}
 package pgtest
 
 import (

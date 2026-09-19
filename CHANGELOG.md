@@ -5,6 +5,14 @@ All notable changes to `github.com/hanzoai/orm` are documented here.
 The format is loosely [Keep a Changelog](https://keepachangelog.com/) and
 versioning follows [SemVer](https://semver.org/).
 
+## v0.6.37
+
+### Changed
+
+- **`pgtest` is public** (was `internal/pgtest`). A store built on `orm/tenant`
+  lives in another module and has to hold its own behaviour on both engines;
+  it starts a throwaway PostgreSQL the same way orm's suites do.
+
 ## v0.6.36
 
 ### Added
