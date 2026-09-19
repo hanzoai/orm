@@ -200,22 +200,26 @@ func (t *Typed[T]) First(ctx context.Context) (T, bool, error) {
 	return out, true, nil
 }
 
-// Count executes the query as `SELECT COUNT(*)` and returns the row count.
-// All other clauses (WHERE, JOIN, GROUP BY, HAVING, ORDER BY, LIMIT, OFFSET)
-// are preserved on a CLONE of the underlying *SelectQuery — the receiver's
-// column list is never mutated, so subsequent .All() / .One() calls return
-// rows with the caller's original projection intact.
+// Count returns how many rows the query reads: the query itself, run as a
+// subquery of SELECT COUNT(*). It works on a copy, so the receiver's
+// projection is untouched and a later All or One reads what it always did.
+//
+// The order is dropped — it has no bearing on a count. Counting by swapping
+// the projection for COUNT(*) instead left the ORDER BY beside the aggregate,
+// which PostgreSQL refuses outright ("must appear in the GROUP BY clause")
+// and SQLite accepts, so every ordered Count failed on one engine only; and it
+// answered one group's count for a grouped query and ignored LIMIT.
 func (t *Typed[T]) Count(ctx context.Context) (int64, error) {
 	if t.err != nil {
 		return 0, t.err
 	}
+	inner := t.q.Copy()
+	inner.OrderBy()
+	rows := inner.Build()
 	var n int64
-	q := t.q.Copy().WithContext(ctx)
-	q.Select("COUNT(*)")
-	if err := q.Row(&n); err != nil {
-		return 0, err
-	}
-	return n, nil
+	err := inner.Info().Builder.NewQuery("SELECT COUNT(*) FROM (" + rows.SQL() + ") AS n").
+		Bind(rows.Params()).WithContext(ctx).Row(&n)
+	return n, err
 }
 
 // Map executes the query via All(ctx) and transforms each row T into U using fn.

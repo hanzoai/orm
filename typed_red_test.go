@@ -24,35 +24,36 @@ import (
 // list so a subsequent .All() returns zero-value rows. This test
 // proves the fix is in place: Count must operate on a COPY.
 func TestCountDoesNotMutateQuery(t *testing.T) {
-	db := seedTypedDB(t)
+	relational(t, func(t *testing.T, db *query.DB) {
 
-	q := orm.Select[typedUser](db, "users", "id", "email", "active").
-		Where(query.HashExp{"active": true}).
-		OrderBy("email")
+		q := orm.Select[typedUser](db, "users", "id", "email", "active").
+			Where(query.HashExp{"active": true}).
+			OrderBy("email")
 
-	// Count first.
-	n, err := q.Count(context.Background())
-	if err != nil {
-		t.Fatalf("Count: %v", err)
-	}
-	if n != 2 {
-		t.Fatalf("want 2, got %d", n)
-	}
+		// Count first.
+		n, err := q.Count(context.Background())
+		if err != nil {
+			t.Fatalf("Count: %v", err)
+		}
+		if n != 2 {
+			t.Fatalf("want 2, got %d", n)
+		}
 
-	// Now fetch — must return the original columns with real data.
-	users, err := q.All(context.Background())
-	if err != nil {
-		t.Fatalf("All after Count: %v", err)
-	}
-	if len(users) != 2 {
-		t.Fatalf("want 2 users, got %d (Count mutated q)", len(users))
-	}
-	if users[0].ID == "" || users[0].Email == "" {
-		t.Fatalf("Count clobbered columns — got zero-value row: %+v", users[0])
-	}
-	if users[0].Email != "alice@x.io" || users[1].Email != "bob@x.io" {
-		t.Fatalf("unexpected order/values after Count: %+v", users)
-	}
+		// Now fetch — must return the original columns with real data.
+		users, err := q.All(context.Background())
+		if err != nil {
+			t.Fatalf("All after Count: %v", err)
+		}
+		if len(users) != 2 {
+			t.Fatalf("want 2 users, got %d (Count mutated q)", len(users))
+		}
+		if users[0].ID == "" || users[0].Email == "" {
+			t.Fatalf("Count clobbered columns — got zero-value row: %+v", users[0])
+		}
+		if users[0].Email != "alice@x.io" || users[1].Email != "bob@x.io" {
+			t.Fatalf("unexpected order/values after Count: %+v", users)
+		}
+	})
 }
 
 // TestTypedConcurrentSafe guards P6-H1.
@@ -62,63 +63,65 @@ func TestCountDoesNotMutateQuery(t *testing.T) {
 // *SelectQuery. The fix is chain-method cloning (immutable Typed[T]).
 // Run under `go test -race` — zero warnings is the gate.
 func TestTypedConcurrentSafe(t *testing.T) {
-	db := seedTypedDB(t)
+	relational(t, func(t *testing.T, db *query.DB) {
 
-	base := orm.Select[typedUser](db, "users", "id", "email", "active")
+		base := orm.Select[typedUser](db, "users", "id", "email", "active")
 
-	var wg sync.WaitGroup
-	const N = 50
-	wg.Add(N * 2)
-	for i := range N {
-		go func(i int) {
-			defer wg.Done()
-			_, _ = base.
-				Where(query.HashExp{"active": true}).
-				OrderBy("email").
-				All(context.Background())
-		}(i)
-		go func() {
-			defer wg.Done()
-			_, _ = base.Count(context.Background())
-		}()
-	}
-	wg.Wait()
+		var wg sync.WaitGroup
+		const N = 50
+		wg.Add(N * 2)
+		for i := range N {
+			go func(i int) {
+				defer wg.Done()
+				_, _ = base.
+					Where(query.HashExp{"active": true}).
+					OrderBy("email").
+					All(context.Background())
+			}(i)
+			go func() {
+				defer wg.Done()
+				_, _ = base.Count(context.Background())
+			}()
+		}
+		wg.Wait()
+	})
 }
 
 // TestTypedChainingImmutable verifies chain methods do not mutate the
 // receiver. A branched query must not inherit the branch's WHERE.
 func TestTypedChainingImmutable(t *testing.T) {
-	db := seedTypedDB(t)
+	relational(t, func(t *testing.T, db *query.DB) {
 
-	root := orm.Select[typedUser](db, "users")
+		root := orm.Select[typedUser](db, "users")
 
-	active := root.Where(query.HashExp{"active": true})
-	inactive := root.Where(query.HashExp{"active": false})
+		active := root.Where(query.HashExp{"active": true})
+		inactive := root.Where(query.HashExp{"active": false})
 
-	a, err := active.All(context.Background())
-	if err != nil {
-		t.Fatalf("active: %v", err)
-	}
-	if len(a) != 2 {
-		t.Fatalf("active want 2 got %d", len(a))
-	}
+		a, err := active.All(context.Background())
+		if err != nil {
+			t.Fatalf("active: %v", err)
+		}
+		if len(a) != 2 {
+			t.Fatalf("active want 2 got %d", len(a))
+		}
 
-	i, err := inactive.All(context.Background())
-	if err != nil {
-		t.Fatalf("inactive: %v", err)
-	}
-	if len(i) != 1 {
-		t.Fatalf("inactive want 1 got %d", len(i))
-	}
+		i, err := inactive.All(context.Background())
+		if err != nil {
+			t.Fatalf("inactive: %v", err)
+		}
+		if len(i) != 1 {
+			t.Fatalf("inactive want 1 got %d", len(i))
+		}
 
-	// Root must still return everything — it was never mutated.
-	all, err := root.All(context.Background())
-	if err != nil {
-		t.Fatalf("root: %v", err)
-	}
-	if len(all) != 3 {
-		t.Fatalf("root want 3 got %d (root was mutated by branch)", len(all))
-	}
+		// Root must still return everything — it was never mutated.
+		all, err := root.All(context.Background())
+		if err != nil {
+			t.Fatalf("root: %v", err)
+		}
+		if len(all) != 3 {
+			t.Fatalf("root want 3 got %d (root was mutated by branch)", len(all))
+		}
+	})
 }
 
 // TestSafeHashExpRejectsInjection guards P6-H2.
@@ -157,22 +160,23 @@ func TestSafeHashExpRejectsInjection(t *testing.T) {
 // TestSafeHashExpRoundTrip proves the accepted HashExp still builds the
 // correct SQL — validation doesn't break the legitimate path.
 func TestSafeHashExpRoundTrip(t *testing.T) {
-	db := seedTypedDB(t)
+	relational(t, func(t *testing.T, db *query.DB) {
 
-	h, err := orm.SafeHashExp(map[string]any{"active": true})
-	if err != nil {
-		t.Fatalf("SafeHashExp: %v", err)
-	}
-	got, err := orm.Select[typedUser](db, "users").
-		Where(h).
-		OrderBy("email").
-		All(context.Background())
-	if err != nil {
-		t.Fatalf("All: %v", err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("want 2 got %d", len(got))
-	}
+		h, err := orm.SafeHashExp(map[string]any{"active": true})
+		if err != nil {
+			t.Fatalf("SafeHashExp: %v", err)
+		}
+		got, err := orm.Select[typedUser](db, "users").
+			Where(h).
+			OrderBy("email").
+			All(context.Background())
+		if err != nil {
+			t.Fatalf("All: %v", err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("want 2 got %d", len(got))
+		}
+	})
 }
 
 // TestSelectNilDBReturnsError guards P6-M3.

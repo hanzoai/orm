@@ -56,94 +56,98 @@ func seedTypedDB(t *testing.T) *query.DB {
 }
 
 func TestTypedAll(t *testing.T) {
-	db := seedTypedDB(t)
+	relational(t, func(t *testing.T, db *query.DB) {
 
-	got, err := orm.Select[typedUser](db, "users").
-		Where(query.HashExp{"active": true}).
-		OrderBy("email").
-		All(context.Background())
-	if err != nil {
-		t.Fatalf("All: %v", err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("want 2 active users, got %d", len(got))
-	}
-	if got[0].Email != "alice@x.io" || got[1].Email != "bob@x.io" {
-		t.Errorf("unexpected order / values: %+v", got)
-	}
-	if !got[0].Active || !got[1].Active {
-		t.Errorf("inactive users leaked into result")
-	}
+		got, err := orm.Select[typedUser](db, "users").
+			Where(query.HashExp{"active": true}).
+			OrderBy("email").
+			All(context.Background())
+		if err != nil {
+			t.Fatalf("All: %v", err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("want 2 active users, got %d", len(got))
+		}
+		if got[0].Email != "alice@x.io" || got[1].Email != "bob@x.io" {
+			t.Errorf("unexpected order / values: %+v", got)
+		}
+		if !got[0].Active || !got[1].Active {
+			t.Errorf("inactive users leaked into result")
+		}
+	})
 }
 
 func TestTypedOne(t *testing.T) {
-	db := seedTypedDB(t)
+	relational(t, func(t *testing.T, db *query.DB) {
 
-	got, err := orm.Select[typedUser](db, "users").
-		Where(query.HashExp{"id": "u2"}).
-		One(context.Background())
-	if err != nil {
-		t.Fatalf("One: %v", err)
-	}
-	if got == nil || got.Email != "bob@x.io" {
-		t.Errorf("got %+v", got)
-	}
+		got, err := orm.Select[typedUser](db, "users").
+			Where(query.HashExp{"id": "u2"}).
+			One(context.Background())
+		if err != nil {
+			t.Fatalf("One: %v", err)
+		}
+		if got == nil || got.Email != "bob@x.io" {
+			t.Errorf("got %+v", got)
+		}
 
-	_, err = orm.Select[typedUser](db, "users").
-		Where(query.HashExp{"id": "nope"}).
-		One(context.Background())
-	if !errors.Is(err, orm.ErrNotFound) {
-		t.Errorf("want ErrNotFound, got %v", err)
-	}
+		_, err = orm.Select[typedUser](db, "users").
+			Where(query.HashExp{"id": "nope"}).
+			One(context.Background())
+		if !errors.Is(err, orm.ErrNotFound) {
+			t.Errorf("want ErrNotFound, got %v", err)
+		}
+	})
 }
 
 func TestTypedFirst(t *testing.T) {
-	db := seedTypedDB(t)
+	relational(t, func(t *testing.T, db *query.DB) {
 
-	got, ok, err := orm.Select[typedUser](db, "users").
-		Where(query.HashExp{"id": "u1"}).
-		First(context.Background())
-	if err != nil {
-		t.Fatalf("First: %v", err)
-	}
-	if !ok {
-		t.Fatal("expected found=true")
-	}
-	if got.Email != "alice@x.io" {
-		t.Errorf("got %+v", got)
-	}
+		got, ok, err := orm.Select[typedUser](db, "users").
+			Where(query.HashExp{"id": "u1"}).
+			First(context.Background())
+		if err != nil {
+			t.Fatalf("First: %v", err)
+		}
+		if !ok {
+			t.Fatal("expected found=true")
+		}
+		if got.Email != "alice@x.io" {
+			t.Errorf("got %+v", got)
+		}
 
-	_, ok, err = orm.Select[typedUser](db, "users").
-		Where(query.HashExp{"id": "nope"}).
-		First(context.Background())
-	if err != nil {
-		t.Errorf("unexpected err: %v", err)
-	}
-	if ok {
-		t.Error("expected found=false on empty")
-	}
+		_, ok, err = orm.Select[typedUser](db, "users").
+			Where(query.HashExp{"id": "nope"}).
+			First(context.Background())
+		if err != nil {
+			t.Errorf("unexpected err: %v", err)
+		}
+		if ok {
+			t.Error("expected found=false on empty")
+		}
+	})
 }
 
 func TestTypedChainingPassthrough(t *testing.T) {
-	db := seedTypedDB(t)
+	relational(t, func(t *testing.T, db *query.DB) {
 
-	// Build up a query fluent-style, then reach into the underlying
-	// SelectQuery to apply a dbx method not mirrored on Typed, then
-	// terminate. Proves Typed.Query() is a working escape hatch.
-	tq := orm.Select[typedUser](db, "users").
-		Where(query.HashExp{"active": true}).
-		OrderBy("email")
+		// Build up a query fluent-style, then reach into the underlying
+		// SelectQuery to apply a dbx method not mirrored on Typed, then
+		// terminate. Proves Typed.Query() is a working escape hatch.
+		tq := orm.Select[typedUser](db, "users").
+			Where(query.HashExp{"active": true}).
+			OrderBy("email")
 
-	// Escape hatch: apply a dbx-level method.
-	tq.Query().Limit(1)
+		// Escape hatch: apply a dbx-level method.
+		tq.Query().Limit(1)
 
-	got, err := tq.All(context.Background())
-	if err != nil {
-		t.Fatalf("All: %v", err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("want limit=1, got %d rows", len(got))
-	}
+		got, err := tq.All(context.Background())
+		if err != nil {
+			t.Fatalf("All: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("want limit=1, got %d rows", len(got))
+		}
+	})
 }
 
 func TestNewTypedFromExternalBuilder(t *testing.T) {

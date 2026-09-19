@@ -73,7 +73,7 @@ require (
 	github.com/valyala/fasthttp v1.72.0 // indirect
 	github.com/wasilibs/go-re2 v1.3.0 // indirect
 	github.com/zap-proto/go v1.3.0 // indirect
-	github.com/zap-proto/http v0.3.0 // indirect
+	github.com/zap-proto/http v0.3.11 // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	golang.org/x/crypto v0.53.0 // indirect
