@@ -8,3 +8,8 @@
 /data/
 /tmp/
 .claude/worktrees/
+
+# Local symlinks to LLM.md
+CLAUDE.md
+AGENTS.md
+GEMINI.md
