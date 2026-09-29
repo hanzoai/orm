@@ -345,37 +345,46 @@ func (db *SQLiteDB) Put(ctx context.Context, key Key, src any) (Key, error) {
 	db.writeMu.Lock()
 	defer db.writeMu.Unlock()
 
-	_, err = db.writeDB.ExecContext(ctx, putSQL, key.Encode(), key.Kind(), parentID, data)
-
-	if err != nil {
+	if err := putRow(db.writeDB.QueryRowContext(ctx, putSQL, key.Encode(), key.Kind(), parentID, data), key); err != nil {
 		return nil, err
 	}
 	return key, nil
 }
 
-// putSQL writes an entity at its key: a fresh id inserts, an id already held takes
-// the new data. ONE statement for the three writers that perform a put — Put,
-// PutMulti and the transaction's Put — because it was three copies, and the rule
-// below was missing from all three.
+// putSQL writes an entity at its key: a fresh id inserts, an id its own kind
+// holds takes the new data and is live again (Delete leaves a tombstone, and a put
+// that left it standing stored an entity every reader filters out). ONE statement
+// for the three writers that perform a put — Put, PutMulti and the transaction's
+// Put.
 //
-// A PUT MAKES ITS ROW LIVE. Delete leaves a tombstone (deleted = 1) rather than
-// removing the row, and an upsert that replaced only `data` left that tombstone
-// standing: the write reported success and every reader — all of which ask for
-// deleted = 0 — saw nothing. An identity that had once been deleted could then be
-// written again and again and never come back, which for a credential means a key
-// that is minted, handed to its holder, and authenticates nobody.
-//
-// Clearing the flag is the resurrection createIfAbsentSQL already performs, under
-// the same kind guard: the id column is a bare primary key, so a row of another
-// kind can hold this id, and reviving that row would publish one kind's tombstone
-// as another kind's entity. Same kind, live; other kind, the tombstone stands.
+// AN ID ANOTHER KIND HOLDS IS REFUSED. The id column is a bare primary key, so a
+// row of any kind can hold an id; an upsert that replaced its data kept that
+// row's kind and published one kind's document as another's — a key written at a
+// user's id became that user's row. The DO UPDATE applies only to the same kind,
+// and RETURNING names the row written, so a put that wrote nothing is
+// ErrKindMismatch (putRow), as it is for CreateIfAbsent.
 const putSQL = `
 	INSERT INTO _entities (id, kind, parent_id, data, updated_at)
 	VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
 	ON CONFLICT(id) DO UPDATE SET
 		data = excluded.data,
 		updated_at = CURRENT_TIMESTAMP,
-		deleted = CASE WHEN _entities.kind = excluded.kind THEN 0 ELSE _entities.deleted END`
+		deleted = 0
+	WHERE _entities.kind = excluded.kind
+	RETURNING id`
+
+// putRow reads what putSQL returned: a row for a write, none for an id another
+// kind holds.
+func putRow(row *sql.Row, key Key) error {
+	var id string
+	if err := row.Scan(&id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: id %q is held by another kind, not %q", ErrKindMismatch, key.Encode(), key.Kind())
+		}
+		return err
+	}
+	return nil
+}
 
 // createIfAbsentSQL is the first-writer-wins conditional insert for _entities.
 // A fresh id inserts; a conflicting id updates only when the existing row is a
@@ -602,8 +611,7 @@ func (db *SQLiteDB) PutMulti(ctx context.Context, keys []Key, src any) ([]Key, e
 			parentID = &id
 		}
 
-		_, err = stmt.ExecContext(ctx, key.Encode(), key.Kind(), parentID, data)
-		if err != nil {
+		if err := putRow(stmt.QueryRowContext(ctx, key.Encode(), key.Kind(), parentID, data), key); err != nil {
 			return nil, err
 		}
 	}
@@ -1312,9 +1320,10 @@ func (t *sqliteTransaction) Put(key Key, src any) (Key, error) {
 		parentID = &id
 	}
 
-	_, err = t.tx.Exec(putSQL, key.Encode(), key.Kind(), parentID, data)
-
-	return key, err
+	if err := putRow(t.tx.QueryRow(putSQL, key.Encode(), key.Kind(), parentID, data), key); err != nil {
+		return nil, err
+	}
+	return key, nil
 }
 
 func (t *sqliteTransaction) CreateIfAbsent(key Key, src any) (bool, error) {

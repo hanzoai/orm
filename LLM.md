@@ -121,7 +121,10 @@ typed and raw paths, with `Namespaces` still deciding when the file is open
   full namespace):
   - **Separate keyspaces per kind.** The `_entities.id` column is a bare PK, so
     an id held by a DIFFERENT kind is a keyspace collision → `ErrKindMismatch`
-    (loud, never a silent `created=false` that `Get` can't see). Keep each kind
+    (loud, never a silent `created=false` that `Get` can't see), from
+    `CreateIfAbsent` and from every put alike (`Put`, `PutMulti`, a transaction's
+    `Put`, the ZAP SQL and document backends), and the other kind's row is left
+    as it was: a put never replaces it. Keep each kind
     in its own stringID keyspace — e.g. IAM uses `trialclaim:<email>` for a
     claim, not the bare `<email>` that the `User` row already holds.
   - **Normalize before the key.** Match is exact: `"Acme"`, `"acme"`, `"acme "`

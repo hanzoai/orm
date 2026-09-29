@@ -5,6 +5,19 @@ All notable changes to `github.com/hanzoai/orm` are documented here.
 The format is loosely [Keep a Changelog](https://keepachangelog.com/) and
 versioning follows [SemVer](https://semver.org/).
 
+## v0.6.39
+
+### Fixed
+
+- **A put never replaces another kind's row.** `_entities.id` is a bare primary
+  key, and the put upsert replaced `data` whatever kind held the id, keeping that
+  row's kind: a key written at a user's id became that user's row. `Put`,
+  `PutMulti` and the transaction's `Put` now update only a row of their own kind
+  and return `ErrKindMismatch` when another kind holds the id, leaving it as it
+  was; a batch with one such key writes nothing. The ZAP SQL backend applies the
+  same guard, and the document backend updates by (_id, kind) and reports an
+  insert conflict as `ErrKindMismatch`.
+
 ## v0.6.38
 
 ### Added

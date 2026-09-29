@@ -96,8 +96,8 @@ func TestTransactionPutRevivesADeletedId(t *testing.T) {
 }
 
 // The revival is the writer's OWN row and no one else's: an id held by a deleted
-// row of another kind stays deleted, so no tombstone is published under a kind it
-// was never written as.
+// row of another kind stays deleted, and the put onto it is refused, so no
+// tombstone is published under a kind it was never written as.
 func TestPutLeavesAnotherKindsTombstone(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
@@ -111,8 +111,8 @@ func TestPutLeavesAnotherKindsTombstone(t *testing.T) {
 	}
 
 	order := db.NewKey("order", "shared", 0, nil)
-	if _, err := db.Put(ctx, order, &testEntity{Name: "order row"}); err != nil {
-		t.Fatalf("put other kind: %v", err)
+	if _, err := db.Put(ctx, order, &testEntity{Name: "order row"}); !errors.Is(err, ErrKindMismatch) {
+		t.Fatalf("put other kind: %v, want ErrKindMismatch", err)
 	}
 
 	var got testEntity

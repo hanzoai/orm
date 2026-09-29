@@ -324,8 +324,9 @@ func (z *ZapDB) sqlGet(ctx context.Context, key Key, dst any) error {
 // sqlPut writes an entity at its key. A put makes its row LIVE: delete leaves a
 // tombstone here as it does on SQLite, so an upsert that replaced only `data`
 // stored the entity and left every reader — all of which ask for deleted = false —
-// unable to see it. Same rule and same kind guard as sqliteQuery's putSQL, because
-// it is the same table under a different dialect.
+// unable to see it. An id another kind holds is refused with ErrKindMismatch:
+// the same rule and the same kind guard as SQLite's putSQL, because it is the same
+// table under a different dialect.
 //
 // Every argument reaches the server as text — the listener binds them TEXTOID,
 // whatever JSON type they were sent as — so an argument going into a column of
@@ -341,17 +342,25 @@ func (z *ZapDB) sqlPut(ctx context.Context, key Key, src any) (Key, error) {
 	body, _ := json.Marshal(map[string]any{
 		"sql": fmt.Sprintf(`INSERT INTO %s (id, kind, data, created_at, updated_at, deleted)
 			VALUES ($1, $2, $3::jsonb, $4::timestamptz, $5::timestamptz, false)
-			ON CONFLICT (id) DO UPDATE SET data = $3::jsonb, updated_at = $5::timestamptz,
-				deleted = CASE WHEN %s.kind = $2 THEN false ELSE %s.deleted END`,
-			z.cfg.Collection, z.cfg.Collection, z.cfg.Collection),
+			ON CONFLICT (id) DO UPDATE SET data = $3::jsonb, updated_at = $5::timestamptz, deleted = false
+			WHERE %s.kind = $2
+			RETURNING id`,
+			z.cfg.Collection, z.cfg.Collection),
 		"args": []any{key.StringID(), key.Kind(), string(data), now, now},
 	})
-	status, _, err := z.call(ctx, "/exec", body)
+	status, resp, err := z.call(ctx, "/query", body)
 	if err != nil {
 		return nil, err
 	}
 	if status != 200 {
 		return nil, fmt.Errorf("db: zap sql put: status %d", status)
+	}
+	wrote, err := zapRowsReturned(resp)
+	if err != nil {
+		return nil, err
+	}
+	if !wrote {
+		return nil, fmt.Errorf("%w: id %q is held by another kind, not %q", ErrKindMismatch, key.StringID(), key.Kind())
 	}
 	return key, nil
 }
@@ -439,10 +448,13 @@ func (z *ZapDB) docPut(ctx context.Context, key Key, src any) (Key, error) {
 	doc["deleted"] = false
 	doc["updatedAt"] = timeNow().Format(time.RFC3339)
 
-	// Upsert via update, fall back to insert
+	// Upsert via update of this kind's document, falling back to insert. A
+	// document of another kind at the id matches no update and conflicts on
+	// insert, which is ErrKindMismatch: one kind's document never replaces
+	// another's.
 	body, _ := json.Marshal(map[string]any{
 		"collection": z.cfg.Collection,
-		"filter":     map[string]any{"_id": key.StringID()},
+		"filter":     map[string]any{"_id": key.StringID(), "kind": key.Kind()},
 		"update":     map[string]any{"$set": doc},
 	})
 	status, _, err := z.call(ctx, "/update", body)
@@ -451,9 +463,12 @@ func (z *ZapDB) docPut(ctx context.Context, key Key, src any) (Key, error) {
 			"collection": z.cfg.Collection,
 			"documents":  []any{doc},
 		})
-		_, _, err = z.call(ctx, "/insert", body)
+		status, _, err = z.call(ctx, "/insert", body)
 		if err != nil {
 			return nil, err
+		}
+		if status == fasthttp.StatusConflict {
+			return nil, fmt.Errorf("%w: id %q is held by another kind, not %q", ErrKindMismatch, key.StringID(), key.Kind())
 		}
 	}
 	return key, nil
