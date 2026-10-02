@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	// Canonical Hanzo SQLite driver. Registers the "sqlite" database/sql name
 	// under BOTH build configs — modernc (pure Go, !cgo: keeps CGO_ENABLED=0
@@ -47,6 +48,11 @@ type SQLiteDB struct {
 	closed   bool
 	borrowed bool // conn is caller-owned (AdaptSQLDB): Close must not close it
 	mu       sync.RWMutex
+
+	// indexMu serializes Index; indexed is kind → JSON paths that have an index,
+	// replaced whole on every change so statements read it without a lock.
+	indexMu sync.Mutex
+	indexed atomic.Pointer[map[string]map[string]bool]
 }
 
 // AdaptSQLDB layers the ORM's typed-record model (the `_entities` table) over an
@@ -72,6 +78,7 @@ func AdaptSQLDB(conn *sql.DB) (*SQLiteDB, error) {
 		writeDB:  conn,
 		borrowed: true,
 	}
+	db.indexed.Store(&map[string]map[string]bool{})
 	if err := db.initSchema(); err != nil {
 		return nil, fmt.Errorf("db: AdaptSQLDB init schema: %w", err)
 	}
@@ -111,6 +118,7 @@ func NewSQLiteDB(cfg *SQLiteDBConfig) (*SQLiteDB, error) {
 		readDB:  readDB,
 		writeDB: writeDB,
 	}
+	db.indexed.Store(&map[string]map[string]bool{})
 
 	if err := db.initSchema(); err != nil {
 		db.Close()
@@ -230,10 +238,13 @@ func (db *SQLiteDB) initSchema() error {
 		return err
 	}
 
+	// No index on `deleted`: nearly every row is 0, so a statement that reached for
+	// it walked every live row of every kind, and with no statistics the planner
+	// preferred it to idx_entities_kind. Tombstones are only ever touched by id.
 	_, err = db.writeDB.Exec(`
 		CREATE INDEX IF NOT EXISTS idx_entities_kind ON _entities(kind);
 		CREATE INDEX IF NOT EXISTS idx_entities_parent ON _entities(parent_id);
-		CREATE INDEX IF NOT EXISTS idx_entities_deleted ON _entities(deleted);
+		DROP INDEX IF EXISTS idx_entities_deleted;
 	`)
 	return err
 }
@@ -1006,9 +1017,8 @@ func (q *sqliteQuery) First(ctx context.Context, dst any) (Key, error) {
 }
 
 func (q *sqliteQuery) Count(ctx context.Context) (int, error) {
-	where, args := q.buildWhere()
-	query := fmt.Sprintf(`SELECT COUNT(*) FROM _entities WHERE kind = ? AND deleted = 0%s`, where)
-	args = append([]any{q.kind}, args...)
+	where, args, _ := q.buildWhere()
+	query := `SELECT COUNT(*) FROM _entities WHERE ` + where
 
 	var row *sql.Row
 	if q.tx != nil {
@@ -1044,12 +1054,11 @@ func (q *sqliteQuery) Avg(ctx context.Context, field string) (float64, int, erro
 // field is a number — not the rows the filter matched, which is what makes Avg
 // the mean of the values present rather than of the rows scanned.
 func (q *sqliteQuery) reduce(ctx context.Context, field string) (float64, int, error) {
-	where, args := q.buildWhere()
-	expr := fmt.Sprintf("json_extract(data, '$.%s')", ToJSONFieldName(field))
+	where, args, _ := q.buildWhere()
+	expr := jsonExpr(ToJSONFieldName(field))
 	query := fmt.Sprintf(
-		`SELECT COALESCE(SUM(CAST(%s AS REAL)), 0), COUNT(%s) FROM _entities WHERE kind = ? AND deleted = 0%s`,
+		`SELECT COALESCE(SUM(CAST(%s AS REAL)), 0), COUNT(%s) FROM _entities WHERE %s`,
 		expr, expr, where)
-	args = append([]any{q.kind}, args...)
 
 	var row *sql.Row
 	if q.tx != nil {
@@ -1066,10 +1075,9 @@ func (q *sqliteQuery) reduce(ctx context.Context, field string) (float64, int, e
 }
 
 func (q *sqliteQuery) Keys(ctx context.Context) ([]Key, error) {
-	where, args := q.buildWhere()
-	query := fmt.Sprintf(`SELECT id FROM _entities WHERE kind = ? AND deleted = 0%s`, where)
-	args = append([]any{q.kind}, args...)
-	query += q.buildOrderBy()
+	where, args, driven := q.buildWhere()
+	query := `SELECT id FROM _entities WHERE ` + where
+	query += q.buildOrderBy(driven)
 	query += q.buildLimitOffset()
 
 	var rows *sql.Rows
@@ -1114,23 +1122,26 @@ func (q *sqliteQuery) Run(ctx context.Context) Iterator {
 }
 
 func (q *sqliteQuery) buildSQL() (string, []any) {
-	where, args := q.buildWhere()
+	where, args, driven := q.buildWhere()
 
 	selectClause := "id, data"
 	if q.distinct {
 		selectClause = "DISTINCT " + selectClause
 	}
 
-	query := fmt.Sprintf(`SELECT %s FROM _entities WHERE kind = ? AND deleted = 0%s`, selectClause, where)
-	args = append([]any{q.kind}, args...)
-	query += q.buildOrderBy()
+	query := fmt.Sprintf(`SELECT %s FROM _entities WHERE %s`, selectClause, where)
+	query += q.buildOrderBy(driven)
 	query += q.buildLimitOffset()
 
 	return query, args
 }
 
-func (q *sqliteQuery) buildWhere() (string, []any) {
-	var conditions []string
+// buildWhere is the WHERE clause of every statement over q, its arguments, and
+// whether one of q's filters drives an index (sqlite_index.go). It starts with the
+// kind as a literal so the kind's partial indexes apply; an indexed filter that does
+// not drive is written +expr, which still filters but cannot be chosen as the index.
+func (q *sqliteQuery) buildWhere() (string, []any, bool) {
+	conditions := []string{kindClause(q.kind)}
 	var args []any
 
 	if q.ancestor != nil {
@@ -1138,27 +1149,20 @@ func (q *sqliteQuery) buildWhere() (string, []any) {
 		args = append(args, q.ancestor.Encode())
 	}
 
-	for _, f := range q.filters {
+	indexed := q.db.indexedPaths(q.kind)
+	drive := drivingFilter(q.filters, indexed)
+	for i, f := range q.filters {
 		fieldName := ToJSONFieldName(f.Field)
-		jsonPath := fmt.Sprintf("json_extract(data, '$.%s')", fieldName)
+		jsonPath := jsonExpr(fieldName)
 
-		if f.Op == "=" {
-			switch v := f.Value.(type) {
-			case bool:
-				if !v {
-					conditions = append(conditions, fmt.Sprintf("COALESCE(%s, 0) = ?", jsonPath))
-					args = append(args, 0)
-					continue
-				}
-			case int:
-				if v == 0 {
-					conditions = append(conditions, fmt.Sprintf("COALESCE(%s, 0) = ?", jsonPath))
-					args = append(args, 0)
-					continue
-				}
-			}
+		if zeroEquality(f) {
+			conditions = append(conditions, fmt.Sprintf("COALESCE(%s, 0) = ?", jsonPath))
+			args = append(args, 0)
+			continue
 		}
-
+		if indexed[fieldName] && i != drive {
+			jsonPath = "+" + jsonPath
+		}
 		conditions = append(conditions, fmt.Sprintf("%s %s ?", jsonPath, f.Op))
 		args = append(args, f.Value)
 	}
@@ -1172,20 +1176,24 @@ func (q *sqliteQuery) buildWhere() (string, []any) {
 		args = append(args, q.endCursor.ID)
 	}
 
-	if len(conditions) == 0 {
-		return "", args
-	}
-	return " AND " + strings.Join(conditions, " AND "), args
+	return strings.Join(conditions, " AND "), args, drive >= 0
 }
 
-func (q *sqliteQuery) buildOrderBy() string {
+// buildOrderBy orders by each field. When a filter drives an index the order terms
+// are written +expr, so the planner sorts what that index found instead of walking
+// another index in order and filtering as it goes; with no driving filter an index
+// on the first order field may serve the order itself.
+func (q *sqliteQuery) buildOrderBy(driven bool) string {
 	if len(q.orders) == 0 {
 		return ""
 	}
 
 	var parts []string
 	for _, o := range q.orders {
-		jsonPath := fmt.Sprintf("json_extract(data, '$.%s')", ToJSONFieldName(o.Field))
+		jsonPath := jsonExpr(ToJSONFieldName(o.Field))
+		if driven {
+			jsonPath = "+" + jsonPath
+		}
 		if o.Desc {
 			parts = append(parts, jsonPath+" DESC")
 		} else {

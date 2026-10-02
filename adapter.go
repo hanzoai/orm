@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"strings"
+	"sync"
 
 	ormdb "github.com/hanzoai/orm/db"
 )
@@ -93,6 +94,8 @@ func AdaptDB(d ormdb.DB) DB {
 // dbAdapter wraps db.DB to satisfy orm.DB.
 type dbAdapter struct {
 	db ormdb.DB
+
+	indexing sync.Map // kind → true once its index build has started
 }
 
 func (a *dbAdapter) Get(ctx context.Context, key Key, dst any) error {
@@ -134,7 +137,38 @@ func (a *dbAdapter) Delete(ctx context.Context, key Key) error {
 }
 
 func (a *dbAdapter) Query(kind string) Query {
+	a.index(kind)
 	return &queryAdapter{q: a.db.Query(kind), db: a.db, kind: kind}
+}
+
+// indexer is a store that keeps an index per tagged field (ormdb.SQLiteDB).
+type indexer interface {
+	Index(kind string, paths []string) error
+}
+
+// index builds kind's indexes the first time the kind is queried through a. The
+// build runs on its own goroutine: it waits for the store's write lock, and the
+// caller may be inside a transaction that holds it. Statements read the indexes
+// only once they exist, so a query issued during the build runs as it did before.
+// A failed build is logged and tried again on the next query of the kind.
+func (a *dbAdapter) index(kind string) {
+	ix, ok := a.db.(indexer)
+	if !ok {
+		return
+	}
+	meta, ok := Lookup(kind)
+	if !ok || len(meta.Indexes) == 0 {
+		return
+	}
+	if _, started := a.indexing.LoadOrStore(kind, true); started {
+		return
+	}
+	go func() {
+		if err := ix.Index(kind, meta.Indexes); err != nil {
+			log.Printf("orm: index %s: %v", kind, err)
+			a.indexing.Delete(kind)
+		}
+	}()
 }
 
 func (a *dbAdapter) NewKey(kind, stringID string, intID int64, parent Key) Key {

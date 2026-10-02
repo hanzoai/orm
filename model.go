@@ -479,6 +479,7 @@ type Meta struct {
 	DefaultsFn  func(any)         // optional custom defaults
 	Defaults    map[string]string // field name → default value from tags
 	Serialized  map[string]string // JSON field name → underscore field name
+	Indexes     []string          // JSON paths of fields tagged orm:"index"
 	CacheConfig *CacheConfig      // per-model cache settings (nil = use global)
 }
 
@@ -578,6 +579,8 @@ func Kinds() []string {
 // Supported tags:
 //   - orm:"default:value"     — sets default value on New()
 //   - orm:"serialize"         — marks field for auto Load/Save with its _ sibling
+//   - orm:"index"             — the store keeps an index on the field (SQLite:
+//     a partial index per kind, db/sqlite_index.go)
 //
 // Legacy detection: if a field has `datastore:"-"` and a sibling Foo_ exists,
 // it is treated as serialized automatically.
@@ -609,6 +612,12 @@ func parseStructTags(typ reflect.Type, meta *Meta) {
 					meta.Defaults[f.Name] = after
 				}
 
+				if part == "index" {
+					if name := jsonName(f); name != "" {
+						meta.Indexes = append(meta.Indexes, name)
+					}
+				}
+
 				if part == "serialize" {
 					underscoreName := f.Name + "_"
 					if fieldNames[underscoreName] {
@@ -630,6 +639,19 @@ func parseStructTags(typ reflect.Type, meta *Meta) {
 			}
 		}
 	}
+}
+
+// jsonName is the key f is stored under in an entity's JSON document, or "" when
+// json:"-" keeps it out of the document.
+func jsonName(f reflect.StructField) string {
+	name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+	switch name {
+	case "-":
+		return ""
+	case "":
+		return f.Name
+	}
+	return name
 }
 
 // resetRegistry clears the registry (for testing).

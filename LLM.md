@@ -102,6 +102,14 @@ typed and raw paths, with `Namespaces` still deciding when the file is open
 - Filters use `json_extract(data, '$.fieldName')` with PascalCase→camelCase conversion
 - Boolean false/zero handled via `COALESCE(json_extract(...), 0) = ?`
 - WAL mode, separate read/write connections, write mutex for serialized writes
+- `orm:"index"` is a partial index per kind (`db/sqlite_index.go`):
+  `idx_<kind>_<path> ON _entities(json_extract(data, '$.<path>')) WHERE kind = '<kind>' AND deleted = 0`,
+  built in the background on a kind's first query through `orm.DB`. Statements
+  spell the kind as a literal so the partial index applies. The LAST equality
+  filter on an indexed field drives the lookup; the other indexed terms are
+  written `+expr`. There are no statistics, so the query picks the index, not
+  the planner. No index on `deleted`: it led every unindexed statement across
+  every kind.
 
 ### Conditional Insert — `CreateIfAbsent` (race-safe CAS)
 - `CreateIfAbsent(ctx, key, src) (created bool, err error)` on both interface
