@@ -157,6 +157,22 @@ var contract = []conformance{
 		}
 	}},
 
+	{"first returns the matching entity", func(t *testing.T, db DB) {
+		ctx := context.Background()
+		name := uniqueID("first")
+		if _, err := db.Put(ctx, db.NewKey("conform", name+"-a", 0, nil), &conformDoc{Name: name, Count: 3}); err != nil {
+			t.Fatalf("put: %v", err)
+		}
+		var got conformDoc
+		_, ok, err := db.Query("conform").Filter("name=", name).First(&got)
+		if err != nil || !ok {
+			t.Fatalf("first: ok=%v err=%v", ok, err)
+		}
+		if got.Name != name || got.Count != 3 {
+			t.Fatalf("first read %+v, want the entity that matched", got)
+		}
+	}},
+
 	{"an empty id is refused", func(t *testing.T, db DB) {
 		_, err := db.CreateIfAbsent(context.Background(),
 			db.NewKey("conform", "", 0, nil), &conformDoc{Name: "nameless"})

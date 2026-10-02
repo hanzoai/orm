@@ -75,6 +75,10 @@ type ZapConfig struct {
 	QueryTimeout time.Duration
 }
 
+// errZapClosed is every call on a ZapDB after Close: a store that cannot answer,
+// never an empty one.
+var errZapClosed = errors.New("db: zap: closed")
+
 // ZapDB implements db.DB over the ZAP-HTTP binary protocol.
 type ZapDB struct {
 	transport *zaphttp.Transport
@@ -82,6 +86,12 @@ type ZapDB struct {
 	mu        sync.RWMutex
 	closed    bool
 	tenantID  string
+	// inTx marks the handle a SQL transaction runs on (zap_tx.go): its one
+	// connection holds the transaction, so every statement through it is part
+	// of that transaction.
+	inTx bool
+	// indexed is the set of kind/path indexes this process has created (Index).
+	indexed sync.Map
 }
 
 // NewZapDB dials a ZAP-native backend and returns a DB implementation. The
@@ -126,6 +136,12 @@ func (z *ZapDB) call(ctx context.Context, path string, body []byte) (uint32, []b
 	if err := ctx.Err(); err != nil {
 		return 0, nil, err
 	}
+	z.mu.RLock()
+	closed := z.closed
+	z.mu.RUnlock()
+	if closed {
+		return 0, nil, errZapClosed
+	}
 
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -139,6 +155,13 @@ func (z *ZapDB) call(ctx context.Context, path string, body []byte) (uint32, []b
 	req.SetBody(body)
 
 	if err := z.transport.DoContext(ctx, req, resp); err != nil {
+		if z.inTx && path != "/commit" && ctx.Err() == nil {
+			// The server rolls back a transaction whose connection is gone, so a
+			// transaction that lost it before /commit wrote nothing and may run
+			// again. One that lost it during /commit may have committed: that
+			// stays an error.
+			return 0, nil, fmt.Errorf("%w: zap call %s: transaction connection lost: %v", ErrSerializationFailure, path, err)
+		}
 		return 0, nil, fmt.Errorf("db: zap call %s: %w", path, err)
 	}
 
@@ -166,6 +189,9 @@ func (z *ZapDB) Get(ctx context.Context, key Key, dst any) error {
 }
 
 func (z *ZapDB) Put(ctx context.Context, key Key, src any) (Key, error) {
+	if key == nil || key.Incomplete() {
+		return nil, ErrInvalidKey
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -264,13 +290,13 @@ func (z *ZapDB) PutVector(ctx context.Context, kind string, id string, vector []
 	return errors.New("db: zap PutVector not yet implemented")
 }
 
+// NewKey names the entity it is given. An empty stringID with no intID is an
+// incomplete key, refused by every write, as on SQLite; NewIncompleteKey is the
+// one call that mints an id.
 func (z *ZapDB) NewKey(kind string, stringID string, intID int64, parent Key) Key {
 	id := stringID
 	if id == "" && intID != 0 {
 		id = fmt.Sprintf("%d", intID)
-	}
-	if id == "" {
-		id = newStringID()
 	}
 	return &zapKey{kind: kind, stringID: id, intID: intID, parent: parent}
 }
@@ -288,9 +314,15 @@ func (z *ZapDB) AllocateIDs(kind string, parent Key, n int) ([]Key, error) {
 }
 
 func (z *ZapDB) RunInTransaction(ctx context.Context, fn func(tx Transaction) error, opts *TransactionOptions) error {
-	// The backend owns transaction semantics; the driver runs fn against a
-	// thin transaction view that forwards each op over ZAP.
-	return fn(&zapTransaction{db: z})
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if z.cfg.Backend == ZapSQL {
+		return z.sqlRunInTransaction(ctx, fn, opts)
+	}
+	// The other backends have no transaction to open; fn runs against a view
+	// that forwards each op over ZAP.
+	return fn(&zapTransaction{db: z, ctx: ctx})
 }
 
 func (z *ZapDB) Close() error {
@@ -308,7 +340,7 @@ func (z *ZapDB) Close() error {
 
 func (z *ZapDB) sqlGet(ctx context.Context, key Key, dst any) error {
 	body, _ := json.Marshal(map[string]any{
-		"sql":  fmt.Sprintf("SELECT data FROM %s WHERE id = $1 AND kind = $2 AND deleted = false", z.cfg.Collection),
+		"sql":  fmt.Sprintf("SELECT data FROM %s WHERE id = $1 AND kind = $2 AND deleted = false%s", z.cfg.Collection, forUpdate(ctx)),
 		"args": []any{key.StringID(), key.Kind()},
 	})
 	status, resp, err := z.call(ctx, "/query", body)
@@ -316,7 +348,7 @@ func (z *ZapDB) sqlGet(ctx context.Context, key Key, dst any) error {
 		return err
 	}
 	if status != 200 {
-		return ErrNoSuchEntity
+		return sqlError("get", status, resp)
 	}
 	return z.unmarshalSQLRows(resp, dst)
 }
@@ -346,12 +378,12 @@ func (z *ZapDB) sqlPut(ctx context.Context, key Key, src any) (Key, error) {
 			z.cfg.Collection, z.cfg.Collection, z.cfg.Collection),
 		"args": []any{key.StringID(), key.Kind(), string(data), now, now},
 	})
-	status, _, err := z.call(ctx, "/exec", body)
+	status, resp, err := z.call(ctx, "/exec", body)
 	if err != nil {
 		return nil, err
 	}
 	if status != 200 {
-		return nil, fmt.Errorf("db: zap sql put: status %d", status)
+		return nil, sqlError("put", status, resp)
 	}
 	return key, nil
 }
@@ -387,7 +419,7 @@ func (z *ZapDB) sqlCreateIfAbsent(ctx context.Context, key Key, src any) (bool, 
 		return false, err
 	}
 	if status != 200 {
-		return false, fmt.Errorf("db: zap sql create-if-absent: status %d", status)
+		return false, sqlError("create-if-absent", status, resp)
 	}
 	return zapRowsReturned(resp)
 }
@@ -408,8 +440,14 @@ func (z *ZapDB) sqlDelete(ctx context.Context, key Key) error {
 		"sql":  fmt.Sprintf("UPDATE %s SET deleted = true, updated_at = $1::timestamptz WHERE id = $2 AND kind = $3", z.cfg.Collection),
 		"args": []any{timeNow().Format(time.RFC3339), key.StringID(), key.Kind()},
 	})
-	_, _, err := z.call(ctx, "/exec", body)
-	return err
+	status, resp, err := z.call(ctx, "/exec", body)
+	if err != nil {
+		return err
+	}
+	if status != 200 {
+		return sqlError("delete", status, resp)
+	}
+	return nil
 }
 
 // --- DocumentDB backend ---
@@ -712,14 +750,21 @@ func (q *zapQuery) GetAll(ctx context.Context, dst any) ([]Key, error) {
 	}
 }
 
+// First reads the first matching entity into dst, which points at one entity, not
+// a slice of them.
 func (q *zapQuery) First(ctx context.Context, dst any) (Key, error) {
-	limited := q.Limit(1)
-	keys, err := limited.GetAll(ctx, dst)
+	var docs []json.RawMessage
+	keys, err := q.Limit(1).GetAll(ctx, &docs)
 	if err != nil {
 		return nil, err
 	}
 	if len(keys) == 0 {
 		return nil, ErrNoSuchEntity
+	}
+	if dst != nil && len(docs) > 0 {
+		if err := json.Unmarshal(docs[0], dst); err != nil {
+			return nil, fmt.Errorf("db: zap first: decode: %w", err)
+		}
 	}
 	return keys[0], nil
 }
@@ -733,12 +778,17 @@ func (q *zapQuery) Count(ctx context.Context) (int, error) {
 
 	sql, args := q.buildSQL("COUNT(*) as count")
 	body, _ := json.Marshal(map[string]any{"sql": sql, "args": args})
-	_, resp, err := q.db.call(ctx, "/query", body)
+	status, resp, err := q.db.call(ctx, "/query", body)
 	if err != nil {
 		return 0, err
 	}
+	if status != 200 {
+		return 0, sqlError("count", status, resp)
+	}
 	var rows []map[string]any
-	json.Unmarshal(resp, &rows)
+	if err := json.Unmarshal(resp, &rows); err != nil {
+		return 0, fmt.Errorf("db: zap sql count: decode reply: %w", err)
+	}
 	if len(rows) == 0 {
 		return 0, nil
 	}
@@ -781,12 +831,17 @@ func (q *zapQuery) reduce(ctx context.Context, field string) (float64, int, erro
 	sql, args := q.buildSQL(fmt.Sprintf(
 		"COALESCE(SUM((%s)::double precision), 0) as total, COUNT(%s) as n", expr, expr))
 	body, _ := json.Marshal(map[string]any{"sql": sql, "args": args})
-	_, resp, err := q.db.call(ctx, "/query", body)
+	status, resp, err := q.db.call(ctx, "/query", body)
 	if err != nil {
 		return 0, 0, err
 	}
+	if status != 200 {
+		return 0, 0, sqlError("reduce", status, resp)
+	}
 	var rows []map[string]any
-	json.Unmarshal(resp, &rows)
+	if err := json.Unmarshal(resp, &rows); err != nil {
+		return 0, 0, fmt.Errorf("db: zap sql reduce: decode reply: %w", err)
+	}
 	if len(rows) == 0 {
 		return 0, 0, nil
 	}
@@ -837,13 +892,16 @@ func compare(path, op string, value any, idx int) string {
 	}
 }
 
+// The kind is written as a literal, not bound: an index on one of the kind's fields
+// is partial (WHERE kind = '<kind>' AND deleted = false, see Index), and PostgreSQL
+// uses a partial index only for a statement whose WHERE clause states its predicate.
 func (q *zapQuery) buildSQL(sel string) (string, []any) {
 	table := q.db.cfg.Collection
-	args := []any{q.kind}
-	idx := 2
+	var args []any
+	idx := 1
 
 	var sql strings.Builder
-	sql.WriteString(fmt.Sprintf("SELECT %s FROM %s WHERE kind = $1 AND deleted = false", sel, table))
+	sql.WriteString(fmt.Sprintf("SELECT %s FROM %s WHERE %s", sel, table, pgKindClause(q.kind)))
 
 	for _, f := range q.filters {
 		sql.WriteString(" AND " + compare(f.field, NormalizeOp(f.op), f.value, idx))
@@ -882,11 +940,13 @@ func (q *zapQuery) sqlGetAll(ctx context.Context, dst any) ([]Key, error) {
 		return nil, err
 	}
 	if status != 200 {
-		return nil, fmt.Errorf("db: zap query: status %d", status)
+		return nil, sqlError("query", status, resp)
 	}
 
 	var rows []map[string]any
-	json.Unmarshal(resp, &rows)
+	if err := json.Unmarshal(resp, &rows); err != nil {
+		return nil, fmt.Errorf("db: zap sql query: decode reply: %w", err)
+	}
 
 	keys := make([]Key, 0, len(rows))
 	for _, row := range rows {
@@ -903,7 +963,9 @@ func (q *zapQuery) sqlGetAll(ctx context.Context, dst any) ([]Key, error) {
 			}
 		}
 		combined, _ := json.Marshal(dataList)
-		json.Unmarshal(combined, dst)
+		if err := json.Unmarshal(combined, dst); err != nil {
+			return nil, fmt.Errorf("db: zap sql query: decode into %T: %w", dst, err)
+		}
 	}
 	return keys, nil
 }
@@ -957,30 +1019,33 @@ func (q *zapQuery) docGetAll(ctx context.Context, dst any) ([]Key, error) {
 
 // --- zapTransaction ---
 
-type zapTransaction struct{ db *ZapDB }
-
-func (t *zapTransaction) Get(key Key, dst any) error {
-	return t.db.Get(context.Background(), key, dst)
+// zapTransaction is the view fn runs against. On the SQL backend db is the handle
+// holding the transaction's connection (zap_tx.go); elsewhere it is the DB itself.
+type zapTransaction struct {
+	db  *ZapDB
+	ctx context.Context
 }
 
-// GetForUpdate is Get over ZAP — ZAP's transaction model is application-level
-// and the underlying backend handles locking. Treat as regular Get.
+func (t *zapTransaction) Get(key Key, dst any) error {
+	return t.db.Get(t.ctx, key, dst)
+}
+
+// GetForUpdate reads the entity and, inside a SQL transaction, locks its row until
+// the transaction ends.
 func (t *zapTransaction) GetForUpdate(key Key, dst any) error {
-	return t.db.Get(context.Background(), key, dst)
+	return t.db.Get(withForUpdate(t.ctx), key, dst)
 }
 
 func (t *zapTransaction) Put(key Key, src any) (Key, error) {
-	return t.db.Put(context.Background(), key, src)
+	return t.db.Put(t.ctx, key, src)
 }
 
-// CreateIfAbsent forwards to the DB; ZAP's transaction model is application-level
-// and the underlying backend owns the conditional-insert atomicity.
 func (t *zapTransaction) CreateIfAbsent(key Key, src any) (bool, error) {
-	return t.db.CreateIfAbsent(context.Background(), key, src)
+	return t.db.CreateIfAbsent(t.ctx, key, src)
 }
 
 func (t *zapTransaction) Delete(key Key) error {
-	return t.db.Delete(context.Background(), key)
+	return t.db.Delete(t.ctx, key)
 }
 
 func (t *zapTransaction) Query(kind string) Query {

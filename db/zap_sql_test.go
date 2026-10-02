@@ -1,8 +1,13 @@
 package db
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
+
+	zaphttp "github.com/zap-proto/http"
 )
 
 // hanzo/sql runs these statements itself, so they have to be PostgreSQL. The
@@ -31,16 +36,17 @@ func TestZapQueryIsPostgres(t *testing.T) {
 		t.Fatalf("SQLite reached hanzo/sql: %s", sql)
 	}
 	for _, want := range []string{
-		"data->>'campaignId' = $2",
-		"data->>'active' = $3",
-		"(data->>'price')::double precision > $4::double precision",
+		"WHERE kind = 'creative' AND deleted = false",
+		"data->>'campaignId' = $1",
+		"data->>'active' = $2",
+		"(data->>'price')::double precision > $3::double precision",
 		"ORDER BY data->>'createdAt' DESC",
 	} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("want %q in\n%s", want, sql)
 		}
 	}
-	if len(args) != 4 || args[0] != "creative" {
+	if len(args) != 3 || args[0] != "c1" {
 		t.Fatalf("arguments do not line up with the placeholders: %v", args)
 	}
 }
@@ -54,7 +60,7 @@ func TestZapQueryReadsANestedField(t *testing.T) {
 		filters: []zapFilter{{field: "account.transactionHash", op: "=", value: "0x1"}},
 	}
 	sql, _ := q.buildSQL(zapRows)
-	if !strings.Contains(sql, "data#>>'{account,transactionHash}' = $2") {
+	if !strings.Contains(sql, "data#>>'{account,transactionHash}' = $1") {
 		t.Fatalf("nested field is not a PostgreSQL path: %s", sql)
 	}
 }
@@ -68,5 +74,71 @@ func TestZapQueryFieldNameCannotCarrySQL(t *testing.T) {
 	}
 	if got := jsonField("x' UNION SELECT name FROM pg_class --"); !strings.HasPrefix(got, "data->>'x") || strings.Count(got, "'") != 2 {
 		t.Fatalf("a field name reached the statement: %s", got)
+	}
+}
+
+// The kind is a literal and leads the WHERE clause in the very words an index's
+// predicate uses, so PostgreSQL can use the partial index of a filtered field.
+func TestZapIndexPredicateIsTheQuerysKindClause(t *testing.T) {
+	q := &zapQuery{
+		kind:    "users",
+		db:      &ZapDB{cfg: ZapConfig{Collection: "_entities"}},
+		filters: []zapFilter{{field: "email", op: "=", value: "a@b.c"}},
+	}
+	sql, _ := q.buildSQL(zapRows)
+	ddl := pgIndexDDL("_entities", "users", "email")
+	if !strings.Contains(ddl, "((data->>'email'))") || !strings.Contains(ddl, "WHERE "+pgKindClause("users")) {
+		t.Fatalf("index does not index the filtered expression under the kind's clause: %s", ddl)
+	}
+	if !strings.Contains(sql, "WHERE "+pgKindClause("users")+" AND data->>'email' = $1") {
+		t.Fatalf("statement does not state the index's predicate: %s", sql)
+	}
+	if got := pgKindClause("o'k"); got != "kind = 'o''k' AND deleted = false" {
+		t.Fatalf("a quote in a kind is not escaped: %s", got)
+	}
+}
+
+// A long kind and field keep a name PostgreSQL will not truncate, two long names
+// that share a prefix stay distinct, and a second collection names its own.
+func TestZapIndexNameFitsAndStaysDistinct(t *testing.T) {
+	long := strings.Repeat("k", 60)
+	a, b := pgIndexName("_entities", long, "fieldA"), pgIndexName("_entities", long, "fieldB")
+	if len(a) > 63 || len(b) > 63 || a == b {
+		t.Fatalf("names %q (%d) and %q (%d)", a, len(a), b, len(b))
+	}
+	if got := pgIndexName("_entities", "users", "email"); got != "idx_users_email" {
+		t.Fatalf("a short name is not kept as is: %s", got)
+	}
+	if got := pgIndexName("tenant_a", "users", "email"); got == "idx_users_email" {
+		t.Fatalf("a second collection reuses the default collection's index name: %s", got)
+	}
+}
+
+// A closed store is a fault, never an empty answer: a Get after Close must not
+// read as "no such entity".
+func TestZapClosedIsAFault(t *testing.T) {
+	z, err := NewZapDB(&ZapConfig{Addr: "127.0.0.1:1", Backend: ZapSQL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = z.Close()
+	var dst map[string]any
+	err = z.Get(context.Background(), z.NewKey("k", "id", 0, nil), &dst)
+	if err == nil || errors.Is(err, ErrNoSuchEntity) {
+		t.Fatalf("get after close: %v, want a fault", err)
+	}
+}
+
+// A transaction whose connection is lost before /commit wrote nothing, so it is
+// retried; a loss during /commit may have committed, so it is not.
+func TestZapLostTransactionConnection(t *testing.T) {
+	tx := &ZapDB{transport: zaphttp.Dial("tcp", "127.0.0.1:1"), cfg: ZapConfig{Addr: "127.0.0.1:1", Backend: ZapSQL, QueryTimeout: time.Second}, inTx: true}
+	_, _, err := tx.call(context.Background(), "/query", []byte("{}"))
+	if !errors.Is(err, ErrSerializationFailure) {
+		t.Fatalf("lost before commit: %v, want a retryable failure", err)
+	}
+	_, _, err = tx.call(context.Background(), "/commit", []byte("{}"))
+	if err == nil || errors.Is(err, ErrSerializationFailure) {
+		t.Fatalf("lost during commit: %v, want a plain error", err)
 	}
 }

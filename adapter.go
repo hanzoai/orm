@@ -25,7 +25,7 @@ func isSerializationFailure(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, ErrSerializationFailure) {
+	if errors.Is(err, ErrSerializationFailure) || errors.Is(err, ormdb.ErrSerializationFailure) {
 		return true
 	}
 	msg := err.Error()
