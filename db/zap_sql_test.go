@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -140,5 +141,32 @@ func TestZapLostTransactionConnection(t *testing.T) {
 	_, _, err = tx.call(context.Background(), "/commit", []byte("{}"))
 	if err == nil || errors.Is(err, ErrSerializationFailure) {
 		t.Fatalf("lost during commit: %v, want a plain error", err)
+	}
+}
+
+// Of two indexed equalities the last drives; the other is written so that no
+// index can serve it, which is what keeps PostgreSQL off the org-wide owner
+// index when an email names one user.
+func TestZapLastIndexedEqualityDrives(t *testing.T) {
+	z := &ZapDB{cfg: ZapConfig{Collection: "_entities"}, indexed: new(sync.Map)}
+	z.indexed.Store("users\x00owner", true)
+	z.indexed.Store("users\x00email", true)
+	q := &zapQuery{kind: "users", db: z, filters: []zapFilter{
+		{field: "owner", op: "=", value: "hanzo"},
+		{field: "email", op: "=", value: "a@b.c"},
+		{field: "note", op: "=", value: "x"},
+	}}
+	sql, args := q.buildSQL(zapRows)
+	for _, want := range []string{
+		"(data->>'owner' || '') = $1",
+		"AND data->>'email' = $2",
+		"AND data->>'note' = $3",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("want %q in\n%s", want, sql)
+		}
+	}
+	if len(args) != 3 {
+		t.Fatalf("args %v", args)
 	}
 }

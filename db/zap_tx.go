@@ -58,7 +58,7 @@ func (z *ZapDB) sqlTransaction(ctx context.Context, fn func(tx Transaction) erro
 	t.SetReadTimeout(z.cfg.QueryTimeout)
 	t.SetMaxIdleConns(1)
 	defer t.CloseIdleConnections()
-	tx := &ZapDB{transport: t, cfg: z.cfg, tenantID: z.tenantID, inTx: true}
+	tx := &ZapDB{transport: t, cfg: z.cfg, tenantID: z.tenantID, inTx: true, indexed: z.indexed}
 
 	if err := tx.control(ctx, "begin", map[string]any{"isolation": "serializable"}); err != nil {
 		return err
@@ -163,6 +163,15 @@ func (z *ZapDB) Index(kind string, paths []string) error {
 		z.indexed.Store(key, true)
 	}
 	return nil
+}
+
+// indexedPath reports whether this process has indexed path of kind (Index).
+func (z *ZapDB) indexedPath(kind, path string) bool {
+	if z.indexed == nil {
+		return false
+	}
+	_, ok := z.indexed.Load(kind + "\x00" + ToJSONFieldName(path))
+	return ok
 }
 
 // pgIndexDDL is the statement that indexes one path of one kind. Its expression is

@@ -16,12 +16,16 @@
 package db
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/valyala/fasthttp"
@@ -90,8 +94,9 @@ type ZapDB struct {
 	// connection holds the transaction, so every statement through it is part
 	// of that transaction.
 	inTx bool
-	// indexed is the set of kind/path indexes this process has created (Index).
-	indexed sync.Map
+	// indexed is the set of kind/path indexes this process has created (Index),
+	// shared with the transactions it opens so they plan as it does.
+	indexed *sync.Map
 }
 
 // NewZapDB dials a ZAP-native backend and returns a DB implementation. The
@@ -126,13 +131,51 @@ func NewZapDB(cfg *ZapConfig) (*ZapDB, error) {
 	return &ZapDB{
 		transport: t,
 		cfg:       *cfg,
+		indexed:   new(sync.Map),
 	}, nil
+}
+
+// call executes one request/response exchange (exchange, without its retry flag).
+func (z *ZapDB) call(ctx context.Context, path string, body []byte) (uint32, []byte, error) {
+	status, resp, _, err := z.exchange(ctx, path, body)
+	return status, resp, err
+}
+
+// exchange is call, and whether the request went out a second time.
+//
+// A statement outside a transaction that fails because its connection is gone is
+// sent once more, on a fresh connection: the pool's idle connections are dropped
+// first, because a server that restarted — a failover, a roll — left every one of
+// them dead, and the next pooled connection would fail the same way. Every SQL
+// write here is safe to send twice (a put is an upsert, a delete marks a row) but a
+// create-if-absent, which reads `retried` to tell its own row from another's.
+// Inside a transaction the transaction is retried instead (zap_tx.go).
+func (z *ZapDB) exchange(ctx context.Context, path string, body []byte) (uint32, []byte, bool, error) {
+	status, resp, err := z.callOnce(ctx, path, body)
+	if err == nil || z.inTx || z.cfg.Backend != ZapSQL || !connectionLost(err) || ctx.Err() != nil {
+		return status, resp, false, err
+	}
+	z.transport.CloseIdleConnections()
+	status, resp, err = z.callOnce(ctx, path, body)
+	return status, resp, true, err
+}
+
+// connectionLost reports whether err is a connection that ended under a request,
+// as opposed to a reply that was an error.
+func connectionLost(err error) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNREFUSED) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "EOF") || strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "broken pipe") || strings.Contains(msg, "use of closed network connection")
 }
 
 // call executes one ZAP-HTTP request/response exchange: POST path with a JSON
 // body, returning the response status and body. The transport owns framing
 // and the ZAP wire codec.
-func (z *ZapDB) call(ctx context.Context, path string, body []byte) (uint32, []byte, error) {
+func (z *ZapDB) callOnce(ctx context.Context, path string, body []byte) (uint32, []byte, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, nil, err
 	}
@@ -414,14 +457,35 @@ func (z *ZapDB) sqlCreateIfAbsent(ctx context.Context, key Key, src any) (bool, 
 			RETURNING id`, z.cfg.Collection, z.cfg.Collection, z.cfg.Collection),
 		"args": []any{key.StringID(), key.Kind(), string(data), now, now},
 	})
-	status, resp, err := z.call(ctx, "/query", body)
+	status, resp, retried, err := z.exchange(ctx, "/query", body)
 	if err != nil {
 		return false, err
 	}
 	if status != 200 {
 		return false, sqlError("create-if-absent", status, resp)
 	}
-	return zapRowsReturned(resp)
+	created, err := zapRowsReturned(resp)
+	if err != nil || created || !retried {
+		return created, err
+	}
+	// The first send's connection ended without a reply, so it may have created the
+	// row this one found. It did if the row holds exactly what was sent.
+	var have json.RawMessage
+	if err := z.sqlGet(ctx, key, &have); err != nil {
+		return false, err
+	}
+	return sameJSON(have, data), nil
+}
+
+// sameJSON reports whether a and b are one JSON document: keys in any order.
+func sameJSON(a, b []byte) bool {
+	var va, vb any
+	if json.Unmarshal(a, &va) != nil || json.Unmarshal(b, &vb) != nil {
+		return false
+	}
+	ca, _ := json.Marshal(va)
+	cb, _ := json.Marshal(vb)
+	return bytes.Equal(ca, cb)
 }
 
 // zapRowsReturned reports whether a /query reply carried at least one row — the
@@ -876,6 +940,32 @@ func jsonField(path string) string {
 	return fmt.Sprintf("data#>>'{%s}'", strings.ReplaceAll(name, ".", ","))
 }
 
+// drivingFilter is the filter whose index a statement over an indexed kind uses,
+// or -1: the LAST equality on an indexed field. Callers narrow last —
+// Filter("Owner=", org).Filter("Email=", e) — so the last is the selective one.
+// PostgreSQL left to choose between two such indexes took the owner index, which
+// matches every user of an org, over the email index that matches one.
+func (q *zapQuery) drivingFilter() int {
+	pick := -1
+	for i, f := range q.filters {
+		if NormalizeOp(f.op) == "=" && !numeric(f.value) && q.db.indexedPath(q.kind, f.field) {
+			pick = i
+		}
+	}
+	return pick
+}
+
+// numeric reports whether value is compared as a number (compare).
+func numeric(value any) bool {
+	switch value.(type) {
+	case int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64:
+		return true
+	}
+	return false
+}
+
 // compare is one condition: a field, an operator, and the argument at idx.
 //
 // A number is compared as a number. As text, '9' is greater than '10', so a
@@ -903,8 +993,16 @@ func (q *zapQuery) buildSQL(sel string) (string, []any) {
 	var sql strings.Builder
 	sql.WriteString(fmt.Sprintf("SELECT %s FROM %s WHERE %s", sel, table, pgKindClause(q.kind)))
 
-	for _, f := range q.filters {
-		sql.WriteString(" AND " + compare(f.field, NormalizeOp(f.op), f.value, idx))
+	drive := q.drivingFilter()
+	for i, f := range q.filters {
+		op := NormalizeOp(f.op)
+		if i != drive && op == "=" && !numeric(f.value) && q.db.indexedPath(q.kind, f.field) {
+			// An indexed field that does not drive this statement: written so that
+			// no index serves it, and the one that drives is used.
+			sql.WriteString(fmt.Sprintf(" AND (%s || '') = $%d", jsonField(f.field), idx))
+		} else {
+			sql.WriteString(" AND " + compare(f.field, op, f.value, idx))
+		}
 		args = append(args, f.value)
 		idx++
 	}
