@@ -215,6 +215,9 @@ type Key interface {
 const MaxGetAll = 10_000
 
 type Query interface {
+	// Filter narrows the query by one field: "Field=", value. A nil value asks
+	// about the field's absence: "Field=" with nil matches records that have no
+	// value there (the field is missing or null), "Field!=" with nil those that do.
 	Filter(filterStr string, value any) Query
 	FilterField(fieldPath string, op string, value any) Query
 	Order(fieldPath string) Query

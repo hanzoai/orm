@@ -996,6 +996,10 @@ func (q *zapQuery) buildSQL(sel string) (string, []any) {
 	drive := q.drivingFilter()
 	for i, f := range q.filters {
 		op := NormalizeOp(f.op)
+		if f.value == nil {
+			sql.WriteString(" AND " + absence(jsonField(f.field), op))
+			continue
+		}
 		if i != drive && op == "=" && !numeric(f.value) && q.db.indexedPath(q.kind, f.field) {
 			// An indexed field that does not drive this statement: written so that
 			// no index serves it, and the one that drives is used.

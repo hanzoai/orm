@@ -1018,7 +1018,7 @@ func (q *sqliteQuery) First(ctx context.Context, dst any) (Key, error) {
 
 func (q *sqliteQuery) Count(ctx context.Context) (int, error) {
 	where, args, _ := q.buildWhere()
-	query := `SELECT COUNT(*) FROM _entities WHERE ` + where
+	query := `SELECT COUNT(*) FROM ` + q.from() + ` WHERE ` + where
 
 	var row *sql.Row
 	if q.tx != nil {
@@ -1057,8 +1057,8 @@ func (q *sqliteQuery) reduce(ctx context.Context, field string) (float64, int, e
 	where, args, _ := q.buildWhere()
 	expr := jsonExpr(ToJSONFieldName(field))
 	query := fmt.Sprintf(
-		`SELECT COALESCE(SUM(CAST(%s AS REAL)), 0), COUNT(%s) FROM _entities WHERE %s`,
-		expr, expr, where)
+		`SELECT COALESCE(SUM(CAST(%s AS REAL)), 0), COUNT(%s) FROM %s WHERE %s`,
+		expr, expr, q.from(), where)
 
 	var row *sql.Row
 	if q.tx != nil {
@@ -1076,7 +1076,7 @@ func (q *sqliteQuery) reduce(ctx context.Context, field string) (float64, int, e
 
 func (q *sqliteQuery) Keys(ctx context.Context) ([]Key, error) {
 	where, args, driven := q.buildWhere()
-	query := `SELECT id FROM _entities WHERE ` + where
+	query := `SELECT id FROM ` + q.from() + ` WHERE ` + where
 	query += q.buildOrderBy(driven)
 	query += q.buildLimitOffset()
 
@@ -1129,7 +1129,7 @@ func (q *sqliteQuery) buildSQL() (string, []any) {
 		selectClause = "DISTINCT " + selectClause
 	}
 
-	query := fmt.Sprintf(`SELECT %s FROM _entities WHERE %s`, selectClause, where)
+	query := fmt.Sprintf(`SELECT %s FROM %s WHERE %s`, selectClause, q.from(), where)
 	query += q.buildOrderBy(driven)
 	query += q.buildLimitOffset()
 
@@ -1163,6 +1163,10 @@ func (q *sqliteQuery) buildWhere() (string, []any, bool) {
 		if indexed[fieldName] && i != drive {
 			jsonPath = "+" + jsonPath
 		}
+		if f.Value == nil {
+			conditions = append(conditions, absence(jsonPath, f.Op))
+			continue
+		}
 		conditions = append(conditions, fmt.Sprintf("%s %s ?", jsonPath, f.Op))
 		args = append(args, f.Value)
 	}
@@ -1177,6 +1181,36 @@ func (q *sqliteQuery) buildWhere() (string, []any, bool) {
 	}
 
 	return strings.Join(conditions, " AND "), args, drive >= 0
+}
+
+// absence is the condition a filter with a nil value states: "=" holds where the
+// document has no value at path (the field is missing or null), "!=" where it has
+// one. A range over nothing holds nowhere. It is written for both engines, whose
+// JSON paths differ and whose IS NULL is the same.
+func absence(path, op string) string {
+	switch op {
+	case "=", "==":
+		return path + " IS NULL"
+	case "!=", "<>":
+		return path + " IS NOT NULL"
+	default:
+		return "1 = 0"
+	}
+}
+
+// from is the table a statement over q reads, naming the index when a nil
+// equality drives it. SQLite answers IS NULL from an expression index, but with no
+// statistics it estimates the kind index as cheaper and reads the whole kind; the
+// one query that asks which records still lack a field is exactly the one that
+// must not.
+func (q *sqliteQuery) from() string {
+	indexed := q.db.indexedPaths(q.kind)
+	if d := drivingFilter(q.filters, indexed); d >= 0 {
+		if f := q.filters[d]; f.Value == nil && f.Op == "=" {
+			return "_entities INDEXED BY " + quoteIdent(indexPrefix+q.kind+"_"+ToJSONFieldName(f.Field))
+		}
+	}
+	return "_entities"
 }
 
 // buildOrderBy orders by each field. When a filter drives an index the order terms
