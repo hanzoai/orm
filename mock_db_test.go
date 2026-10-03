@@ -138,7 +138,6 @@ func (q *mockQuery) Limit(limit int) Query                    { return q }
 func (q *mockQuery) Offset(offset int) Query                  { return q }
 func (q *mockQuery) Ancestor(ancestor Key) Query              { return q }
 func (q *mockQuery) KeysOnly() Query                          { return q }
-func (q *mockQuery) After(string) Query                       { return q }
 
 func (q *mockQuery) GetAll(_ context.Context, dst any) ([]Key, error) {
 	return nil, nil

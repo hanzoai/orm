@@ -1,7 +1,9 @@
 package orm
 
 import (
+	"context"
 	"database/sql"
+	"encoding/json"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -49,5 +51,34 @@ func TestReadyBuildsTheIndexesFirst(t *testing.T) {
 	}
 	if want := []string{"idx_ready-account_email", "idx_ready-account_owner"}; !slices.Equal(got, want) {
 		t.Fatalf("indexes after Ready: %v, want %v", got, want)
+	}
+}
+
+// After walks an adapted store in key order, and refuses a Query it did not adapt.
+func TestAfterWalksAnAdaptedStore(t *testing.T) {
+	db, err := OpenSQLite(&ormdb.SQLiteDBConfig{Path: ":memory:", Config: ormdb.SQLiteConfig{BusyTimeout: 5000, JournalMode: "WAL"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if _, ok := Lookup("ready-account"); !ok {
+		Register[readyAccount]("ready-account")
+	}
+	for _, id := range []string{"c", "a", "b"} {
+		if _, err := db.Put(context.Background(), db.NewKey("ready-account", id, 0, nil), &readyAccount{Owner: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	q, err := After(db.Query("ready-account"), "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var docs []json.RawMessage
+	keys, err := q.GetAll(context.Background(), &docs)
+	if err != nil || len(keys) != 2 || keys[0].Encode() != "b" || keys[1].Encode() != "c" {
+		t.Fatalf("after a: %v, %v", keys, err)
+	}
+	if _, err := After(&mockQuery{}, ""); err == nil {
+		t.Fatal("After walked a Query it did not adapt")
 	}
 }

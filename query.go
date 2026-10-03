@@ -21,13 +21,6 @@ func (q *ModelQuery[T]) Order(fieldPath string) *ModelQuery[T] {
 	return q
 }
 
-// After walks the kind in key order from after id (from the start when id is
-// empty), replacing any Order. See ormdb.Query.After.
-func (q *ModelQuery[T]) After(id string) *ModelQuery[T] {
-	q.query = q.query.After(id)
-	return q
-}
-
 // Limit sets the maximum number of results.
 func (q *ModelQuery[T]) Limit(limit int) *ModelQuery[T] {
 	q.query = q.query.Limit(limit)

@@ -375,8 +375,18 @@ func (q *queryAdapter) Ancestor(ancestor Key) Query {
 	return &queryAdapter{q: q.q.Ancestor(toDBKey(ancestor)), db: q.db, kind: q.kind}
 }
 
-func (q *queryAdapter) After(id string) Query {
-	return &queryAdapter{q: q.q.After(id), db: q.db, kind: q.kind}
+// After is q walking its kind in key order from after id (ormdb.Walker). A store
+// whose queries cannot walk is reported rather than walked out of order.
+func After(q Query, id string) (Query, error) {
+	a, ok := q.(*queryAdapter)
+	if !ok {
+		return nil, errors.New("orm: this store cannot walk a kind in key order")
+	}
+	w, ok := a.q.(ormdb.Walker)
+	if !ok {
+		return nil, errors.New("orm: this store cannot walk a kind in key order")
+	}
+	return &queryAdapter{q: w.After(id), db: a.db, kind: a.kind}, nil
 }
 
 func (q *queryAdapter) KeysOnly() Query {

@@ -24,7 +24,7 @@ func TestAfterWalksTheKindInKeyOrder(t *testing.T) {
 	seen, last, pages := map[string]bool{}, "", 0
 	for {
 		var docs []json.RawMessage
-		keys, err := db.Query("users").Filter("Owner=", "acme").Order("-Name").After(last).Limit(500).GetAll(ctx, &docs)
+		keys, err := db.Query("users").Filter("Owner=", "acme").Order("-Name").(Walker).After(last).Limit(500).GetAll(ctx, &docs)
 		if err != nil {
 			t.Fatal(err)
 		}

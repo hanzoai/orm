@@ -123,11 +123,6 @@ type Query interface {
 	Limit(limit int) Query
 	Offset(offset int) Query
 	Ancestor(ancestor Key) Query
-	// After pages in key order: the records whose key id sorts after id (every
-	// record when id is empty), ordered by key. It replaces any Order, and the
-	// last key of one page is the id the next page is read after, so a write
-	// between pages cannot shift a record out of the walk.
-	After(id string) Query
 	KeysOnly() Query
 
 	// GetAll executes the query, populating dst (pointer to slice).

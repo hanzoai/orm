@@ -214,6 +214,17 @@ type Key interface {
 // design, because an iterator that stops asking is a reader that is done.
 const MaxGetAll = 10_000
 
+// Walker is a Query that can walk its kind in key order. The SQLite and ZapSQL
+// queries are; it is its own interface so that a Query implemented elsewhere need
+// not be.
+type Walker interface {
+	// After pages in key order: the records whose key id sorts after id (every
+	// record when id is empty), ordered by key. It replaces any Order, and the
+	// last key of one page is the id the next page is read after, so a write
+	// between pages cannot shift a record out of the walk.
+	After(id string) Query
+}
+
 type Query interface {
 	// Filter narrows the query by one field: "Field=", value. A nil value asks
 	// about the field's absence: "Field=" with nil matches records that have no
@@ -227,11 +238,6 @@ type Query interface {
 	Project(fieldNames ...string) Query
 	Distinct() Query
 	Ancestor(ancestor Key) Query
-	// After pages in key order: the records whose key id sorts after id (every
-	// record when id is empty), ordered by key. It replaces any Order, and the
-	// last key of one page is the id the next page is read after, so a write
-	// between pages cannot shift a record out of the walk.
-	After(id string) Query
 	GetAll(ctx context.Context, dst any) ([]Key, error)
 	First(ctx context.Context, dst any) (Key, error)
 	Count(ctx context.Context) (int, error)
