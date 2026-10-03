@@ -86,6 +86,9 @@ func AdaptSQLDB(conn *sql.DB) (*SQLiteDB, error) {
 }
 
 // NewSQLiteDB creates a new SQLite database connection.
+// memoryStores numbers the ":memory:" stores of this process, one database each.
+var memoryStores atomic.Int64
+
 func NewSQLiteDB(cfg *SQLiteDBConfig) (*SQLiteDB, error) {
 	if cfg == nil {
 		return nil, errors.New("db: SQLiteDBConfig is required")
@@ -97,6 +100,15 @@ func NewSQLiteDB(cfg *SQLiteDBConfig) (*SQLiteDB, error) {
 	}
 
 	dsn := sqlite.PragmaDSN(cfg.Path, configPragmas(cfg.Config))
+	if cfg.Path == ":memory:" {
+		// The reads and the writes go through two pools, and every connection to
+		// ":memory:" is a database of its own: the writer would build the schema in
+		// one and a read would find no table in the next. One named, shared-cache
+		// memory database is the same database on every connection, and the name is
+		// this store's alone.
+		dsn = sqlite.PragmaDSN(fmt.Sprintf("orm-memory-%d", memoryStores.Add(1)), configPragmas(cfg.Config)) +
+			"&mode=memory&cache=shared"
+	}
 
 	readDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -850,6 +862,8 @@ type sqliteQuery struct {
 	distinct    bool
 	startCursor *SimpleCursor
 	endCursor   *SimpleCursor
+	// after is set by After: the walk is in key order, from after the id held.
+	after *string
 }
 
 func (q *sqliteQuery) Filter(filterStr string, value any) Query {
@@ -880,6 +894,12 @@ func (q *sqliteQuery) Order(fieldPath string) Query {
 func (q *sqliteQuery) OrderDesc(fieldPath string) Query {
 	newQ := q.clone()
 	newQ.orders = append(newQ.orders, QueryOrder{Field: fieldPath, Desc: true})
+	return newQ
+}
+
+func (q *sqliteQuery) After(id string) Query {
+	newQ := q.clone()
+	newQ.after = &id
 	return newQ
 }
 
@@ -1171,6 +1191,10 @@ func (q *sqliteQuery) buildWhere() (string, []any, bool) {
 		args = append(args, f.Value)
 	}
 
+	if q.after != nil && *q.after != "" {
+		conditions = append(conditions, "id > ?")
+		args = append(args, *q.after)
+	}
 	if q.startCursor != nil {
 		conditions = append(conditions, "id >= ?")
 		args = append(args, q.startCursor.ID)
@@ -1204,6 +1228,9 @@ func absence(path, op string) string {
 // one query that asks which records still lack a field is exactly the one that
 // must not.
 func (q *sqliteQuery) from() string {
+	if q.after != nil {
+		return "_entities" // a key-order walk reads the table by its key
+	}
 	indexed := q.db.indexedPaths(q.kind)
 	if d := drivingFilter(q.filters, indexed); d >= 0 {
 		if f := q.filters[d]; f.Value == nil && f.Op == "=" {
@@ -1218,6 +1245,9 @@ func (q *sqliteQuery) from() string {
 // another index in order and filtering as it goes; with no driving filter an index
 // on the first order field may serve the order itself.
 func (q *sqliteQuery) buildOrderBy(driven bool) string {
+	if q.after != nil {
+		return " ORDER BY id ASC"
+	}
 	if len(q.orders) == 0 {
 		return ""
 	}

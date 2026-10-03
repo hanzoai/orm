@@ -227,6 +227,11 @@ type Query interface {
 	Project(fieldNames ...string) Query
 	Distinct() Query
 	Ancestor(ancestor Key) Query
+	// After pages in key order: the records whose key id sorts after id (every
+	// record when id is empty), ordered by key. It replaces any Order, and the
+	// last key of one page is the id the next page is read after, so a write
+	// between pages cannot shift a record out of the walk.
+	After(id string) Query
 	GetAll(ctx context.Context, dst any) ([]Key, error)
 	First(ctx context.Context, dst any) (Key, error)
 	Count(ctx context.Context) (int, error)

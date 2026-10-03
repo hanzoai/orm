@@ -761,6 +761,8 @@ type zapQuery struct {
 	order   string
 	limit   int
 	offset  int
+	// after is set by After: the walk is in key order, from after the id held.
+	after *string
 }
 
 type zapFilter struct {
@@ -789,6 +791,7 @@ func (q *zapQuery) OrderDesc(fieldPath string) Query {
 	return &nq
 }
 func (q *zapQuery) Limit(limit int) Query              { nq := *q; nq.limit = limit; return &nq }
+func (q *zapQuery) After(id string) Query              { nq := *q; nq.after = &id; return &nq }
 func (q *zapQuery) Offset(offset int) Query            { nq := *q; nq.offset = offset; return &nq }
 func (q *zapQuery) Project(fieldNames ...string) Query { return q }
 func (q *zapQuery) Distinct() Query                    { return q }
@@ -1010,9 +1013,16 @@ func (q *zapQuery) buildSQL(sel string) (string, []any) {
 		args = append(args, f.value)
 		idx++
 	}
+	if q.after != nil && *q.after != "" {
+		sql.WriteString(fmt.Sprintf(" AND id > $%d", idx))
+		args = append(args, *q.after)
+		idx++
+	}
 
 	if sel == zapRows {
-		if q.order != "" {
+		if q.after != nil {
+			sql.WriteString(" ORDER BY id ASC")
+		} else if q.order != "" {
 			desc := q.order[0] == '-'
 			field := q.order
 			if desc {
@@ -1073,6 +1083,9 @@ func (q *zapQuery) sqlGetAll(ctx context.Context, dst any) ([]Key, error) {
 }
 
 func (q *zapQuery) docGetAll(ctx context.Context, dst any) ([]Key, error) {
+	if q.after != nil {
+		return nil, errors.New("db: the datastore backend cannot walk a kind in key order (After)")
+	}
 	filter := map[string]any{"kind": q.kind, "deleted": false}
 	for _, f := range q.filters {
 		jsonField := ToJSONFieldName(f.field)

@@ -3,6 +3,7 @@ package orm
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -169,6 +170,33 @@ func (a *dbAdapter) index(kind string) {
 			a.indexing.Delete(kind)
 		}
 	}()
+}
+
+// Ready builds the indexes of each kind now, before it returns, where the store
+// keeps them (ormdb.SQLiteDB). The first query of a kind otherwise starts the build
+// on its own goroutine and runs without the indexes, which is a scan; a caller
+// whose first query must already be a lookup asks for them first. Call it outside
+// any transaction: the build takes the store's write lock.
+func Ready(db DB, kinds ...string) error {
+	a, ok := db.(*dbAdapter)
+	if !ok {
+		return nil
+	}
+	ix, ok := a.db.(indexer)
+	if !ok {
+		return nil
+	}
+	for _, kind := range kinds {
+		meta, ok := Lookup(kind)
+		if !ok || len(meta.Indexes) == 0 {
+			continue
+		}
+		if err := ix.Index(kind, meta.Indexes); err != nil {
+			return fmt.Errorf("orm: index %s: %w", kind, err)
+		}
+		a.indexing.Store(kind, true)
+	}
+	return nil
 }
 
 func (a *dbAdapter) NewKey(kind, stringID string, intID int64, parent Key) Key {
@@ -345,6 +373,10 @@ func (q *queryAdapter) Offset(offset int) Query {
 
 func (q *queryAdapter) Ancestor(ancestor Key) Query {
 	return &queryAdapter{q: q.q.Ancestor(toDBKey(ancestor)), db: q.db, kind: q.kind}
+}
+
+func (q *queryAdapter) After(id string) Query {
+	return &queryAdapter{q: q.q.After(id), db: q.db, kind: q.kind}
 }
 
 func (q *queryAdapter) KeysOnly() Query {
