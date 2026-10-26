@@ -128,11 +128,20 @@ orm.Register[User]("user", orm.WithCache[User](orm.CacheConfig{
 ```go
 import "github.com/hanzoai/orm/val"
 
-v := val.NewValidator()
-v.CheckString("email", user.Email).Required().Email()
-v.CheckString("name", user.Name).Required().MinLen(2)
-if err := v.Error(); err != nil {
-    return err
+type User struct {
+    Name  string
+    Email string
+}
+
+v := val.New()
+v.Check("Name").Exists()
+v.Check("Email").IsEmail()
+
+user := User{Name: "Alice", Email: "alice@example.com"}
+if errs := v.Exec(&user); len(errs) > 0 {
+    for _, err := range errs {
+        log.Println(err)
+    }
 }
 ```
 
