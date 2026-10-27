@@ -128,11 +128,11 @@ orm.Register[User]("user", orm.WithCache[User](orm.CacheConfig{
 ```go
 import "github.com/hanzoai/orm/val"
 
-v := val.NewValidator()
-v.CheckString("email", user.Email).Required().Email()
-v.CheckString("name", user.Name).Required().MinLen(2)
-if err := v.Error(); err != nil {
-    return err
+v := val.New()
+v.Check("Email").Exists().IsEmail()
+v.Check("Name").Exists().MinLength(2)
+if errs := v.Exec(&user); len(errs) > 0 {
+    return errs[0]
 }
 ```
 
@@ -166,6 +166,15 @@ Benefits:
 | `orm` | Core `Model[T]`, registration, hooks, cache, serialization |
 | `orm/db` | Database interfaces, SQLite driver, ZAP driver |
 | `orm/val` | Struct field validation |
+| `orm/datastore` | Datastore abstractions and key encoding |
+| `orm/dialect` | SQL dialect definitions |
+| `orm/engine` | Query engine and execution |
+| `orm/names` | Naming conventions and field mapping |
+| `orm/pgtest` | PostgreSQL test helpers |
+| `orm/query` | Query builder and filtering |
+| `orm/relational` | Relational model support |
+| `orm/replicated` | Read replica routing |
+| `orm/tenant` | Multi-tenancy support |
 | `orm/internal/json` | JSON encode/decode helpers |
 | `orm/internal/reflect` | Reflection utilities |
 
