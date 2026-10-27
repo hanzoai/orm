@@ -166,12 +166,19 @@ Benefits:
 | `orm` | Core `Model[T]`, registration, hooks, cache, serialization |
 | `orm/db` | Database interfaces, SQLite driver, ZAP driver |
 | `orm/val` | Struct field validation |
-| `orm/internal/json` | JSON encode/decode helpers |
-| `orm/internal/reflect` | Reflection utilities |
+| `orm/datastore` | Analytics plane: a client for Hanzo Datastore, the columnar warehouse behind the usage and observability ledgers |
+| `orm/dialect` | The parts of SQL that differ between engines |
+| `orm/engine` | An xorm-compatible API layer |
+| `orm/names` | Naming convention mappers for converting Go struct field names to column/table names |
+| `orm/query` | SQL AST primitives from `hanzoai/dbx` under the canonical `orm` namespace |
+| `orm/relational` | The relational engine (`hanzoai/xorm`) re-exported so `orm` stays the single namespace |
+| `orm/replicated` | Per-namespace databases, made durable |
+| `orm/tenant` | The relational plane for rows many organizations share |
+| `orm/pgtest` | Test support for Postgres-backed tests |
 
 ## Documentation
 
-Full docs at [hanzo.ai/docs/services/orm](https://hanzo.ai/docs/services/orm)
+Full docs at [docs.hanzo.ai/docs/projects/hanzoai/orm](https://docs.hanzo.ai/docs/projects/hanzoai/orm)
 
 ## License
 
