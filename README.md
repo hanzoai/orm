@@ -163,15 +163,23 @@ Benefits:
 
 | Package | Description |
 |---------|-------------|
-| `orm` | Core `Model[T]`, registration, hooks, cache, serialization |
-| `orm/db` | Database interfaces, SQLite driver, ZAP driver |
-| `orm/val` | Struct field validation |
-| `orm/internal/json` | JSON encode/decode helpers |
-| `orm/internal/reflect` | Reflection utilities |
+| `orm` | Generic ORM with registration, serialization, lifecycle hooks and optional caching |
+| `orm/datastore` | Client for the shared columnar analytics store |
+| `orm/db` | Entity and namespace interfaces for the relational database plane |
+| `orm/dialect` | SQL fragments for differences between database engines |
+| `orm/engine` | xorm-compatible API layer |
+| `orm/names` | Naming mappers for Go fields and database columns and tables |
+| `orm/pgtest` | Throwaway PostgreSQL server for a test binary |
+| `orm/query` | Re-exports SQL AST primitives from hanzoai/dbx |
+| `orm/relational` | Re-exports the xorm relational engine |
+| `orm/relational/schemas` | Re-exports the relational engine's schema vocabulary |
+| `orm/replicated` | Per-namespace database replication (separate Go module) |
+| `orm/tenant` | Shared-table, organization-scoped relational plane |
+| `orm/val` | Struct field validation utilities |
 
 ## Documentation
 
-Full docs at [hanzo.ai/docs/services/orm](https://hanzo.ai/docs/services/orm)
+Full docs at [docs.hanzo.ai/docs/projects/hanzoai/orm](https://docs.hanzo.ai/docs/projects/hanzoai/orm)
 
 ## License
 
