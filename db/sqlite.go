@@ -56,22 +56,36 @@ type SQLiteDB struct {
 }
 
 // AdaptSQLDB layers the ORM's typed-record model (the `_entities` table) over an
-// already-open *sql.DB the CALLER owns. Use it when a store's file is opened
-// elsewhere — cloud's per-org SQLite, for instance, is opened through one seam
-// (cek-encrypted at rest, single-writer, WAL pragmas) and handed to subsystems as a
-// *sql.DB. AdaptSQLDB lets the ORM manage records IN that file without owning the
-// file: the caller keeps the connection's pragmas, encryption, durability, and
-// Close; the ORM only ensures its schema and marshals records.
+// already-open *sql.DB the CALLER owns. Use it when a store's database is opened
+// elsewhere — cloud's per-org store, for instance, is opened through one seam
+// (cek-encrypted SQLite with single-writer WAL pragmas, or a PostgreSQL schema in
+// hanzo-sql) and handed to subsystems as a *sql.DB. AdaptSQLDB lets the ORM manage
+// records IN that database without owning it: the caller keeps the connection's
+// pragmas, encryption, durability, pool and Close; the ORM only ensures its schema
+// and marshals records.
+//
+// The engine is read off the connection's driver, never configured: a pgx pool is
+// PostgreSQL (PostgresDB), anything else is SQLite (SQLiteDB). The two keep the same
+// records in the same table with the same semantics, so a caller does not branch.
+// Close on the returned DB is a no-op — the connection belongs to the caller, who
+// closes it.
+func AdaptSQLDB(conn *sql.DB) (DB, error) {
+	if conn == nil {
+		return nil, errors.New("db: AdaptSQLDB requires a non-nil *sql.DB")
+	}
+	if onPostgres(conn) {
+		return adaptPostgres(conn)
+	}
+	return adaptSQLite(conn)
+}
+
+// adaptSQLite is AdaptSQLDB over SQLite.
 //
 // The one connection serves both reads and writes (the caller's pool, typically
 // MaxOpenConns(1) for a serialized single writer), serialized by writeMu exactly as
 // NewSQLiteDB serializes against its dedicated write connection. initSchema runs so
-// `_entities` exists; any table the caller created is untouched. Close is a no-op —
-// the connection belongs to the caller, who closes it.
-func AdaptSQLDB(conn *sql.DB) (*SQLiteDB, error) {
-	if conn == nil {
-		return nil, errors.New("db: AdaptSQLDB requires a non-nil *sql.DB")
-	}
+// `_entities` exists; any table the caller created is untouched.
+func adaptSQLite(conn *sql.DB) (*SQLiteDB, error) {
 	db := &SQLiteDB{
 		config:   &SQLiteDBConfig{},
 		readDB:   conn,
@@ -436,7 +450,7 @@ type rowQuerier interface {
 // created=false (nil). A row that vanished under a concurrent delete is also nil.
 func checkKindMatch(ctx context.Context, q rowQuerier, id, kind string) error {
 	var existing string
-	switch err := q.QueryRowContext(ctx, `SELECT kind FROM _entities WHERE id = ?`, id).Scan(&existing); {
+	switch err := q.QueryRowContext(ctx, `SELECT kind FROM _entities WHERE id = $1`, id).Scan(&existing); {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil
 	case err != nil:
@@ -467,7 +481,7 @@ func createIfAbsentRow(row *sql.Row) (bool, error) {
 // createIfAbsentSQL, shared by the DB and transaction paths. It returns the
 // encoded id alongside the args so callers can disambiguate a non-create.
 //
-// The Incomplete() guard is not enough on its own: sqliteKey.Incomplete()
+// The Incomplete() guard is not enough on its own: sqlKey.Incomplete()
 // reports the stored flag, which is false for NewKey(kind, "", 0, nil) — an
 // empty stringID whose Encode() is the empty string. Left unguarded, every
 // empty-id create across all kinds would collide on the single id="" row. The
@@ -560,29 +574,7 @@ func (db *SQLiteDB) GetMulti(ctx context.Context, keys []Key, dst any) error {
 		results[id] = data
 	}
 
-	dstVal := reflect.ValueOf(dst)
-	if dstVal.Kind() != reflect.Pointer || dstVal.Elem().Kind() != reflect.Slice {
-		return errors.New("db: dst must be a pointer to a slice")
-	}
-
-	sliceVal := dstVal.Elem()
-	elemType := sliceVal.Type().Elem()
-
-	for _, k := range keys {
-		data, ok := results[k.Encode()]
-		if !ok {
-			sliceVal = reflect.Append(sliceVal, reflect.Zero(elemType))
-			continue
-		}
-		elem := reflect.New(elemType.Elem())
-		if err := json.Unmarshal(data, elem.Interface()); err != nil {
-			return err
-		}
-		sliceVal = reflect.Append(sliceVal, elem)
-	}
-
-	dstVal.Elem().Set(sliceVal)
-	return nil
+	return placeEntities(keys, results, dst)
 }
 
 func (db *SQLiteDB) PutMulti(ctx context.Context, keys []Key, src any) ([]Key, error) {
@@ -759,7 +751,7 @@ func (db *SQLiteDB) PutVector(ctx context.Context, kind string, id string, vecto
 }
 
 func (db *SQLiteDB) NewKey(kind string, stringID string, intID int64, parent Key) Key {
-	return &sqliteKey{
+	return &sqlKey{
 		kind:      kind,
 		stringID:  stringID,
 		intID:     intID,
@@ -769,7 +761,7 @@ func (db *SQLiteDB) NewKey(kind string, stringID string, intID int64, parent Key
 }
 
 func (db *SQLiteDB) NewIncompleteKey(kind string, parent Key) Key {
-	return &sqliteKey{
+	return &sqlKey{
 		kind:       kind,
 		parent:     parent,
 		namespace:  db.config.Namespace,
@@ -780,7 +772,7 @@ func (db *SQLiteDB) NewIncompleteKey(kind string, parent Key) Key {
 func (db *SQLiteDB) AllocateIDs(kind string, parent Key, n int) ([]Key, error) {
 	keys := make([]Key, n)
 	for i := range n {
-		keys[i] = &sqliteKey{
+		keys[i] = &sqlKey{
 			kind:      kind,
 			stringID:  newStringID(),
 			parent:    parent,
@@ -809,8 +801,8 @@ func (db *SQLiteDB) RunInTransaction(ctx context.Context, fn func(tx Transaction
 	return sqlTx.Commit()
 }
 
-// sqliteKey implements the Key interface.
-type sqliteKey struct {
+// sqlKey implements the Key interface.
+type sqlKey struct {
 	kind       string
 	stringID   string
 	intID      int64
@@ -819,14 +811,14 @@ type sqliteKey struct {
 	incomplete bool
 }
 
-func (k *sqliteKey) Kind() string      { return k.kind }
-func (k *sqliteKey) StringID() string  { return k.stringID }
-func (k *sqliteKey) IntID() int64      { return k.intID }
-func (k *sqliteKey) Parent() Key       { return k.parent }
-func (k *sqliteKey) Namespace() string { return k.namespace }
-func (k *sqliteKey) Incomplete() bool  { return k.incomplete }
+func (k *sqlKey) Kind() string      { return k.kind }
+func (k *sqlKey) StringID() string  { return k.stringID }
+func (k *sqlKey) IntID() int64      { return k.intID }
+func (k *sqlKey) Parent() Key       { return k.parent }
+func (k *sqlKey) Namespace() string { return k.namespace }
+func (k *sqlKey) Incomplete() bool  { return k.incomplete }
 
-func (k *sqliteKey) Encode() string {
+func (k *sqlKey) Encode() string {
 	if k.stringID != "" {
 		return k.stringID
 	}
@@ -840,7 +832,7 @@ func (k *sqliteKey) Encode() string {
 	return k.stringID
 }
 
-func (k *sqliteKey) Equal(other Key) bool {
+func (k *sqlKey) Equal(other Key) bool {
 	if other == nil {
 		return false
 	}
@@ -967,44 +959,7 @@ func (q *sqliteQuery) GetAll(ctx context.Context, dst any) ([]Key, error) {
 	}
 	defer rows.Close()
 
-	dstVal := reflect.ValueOf(dst)
-	if dstVal.Kind() != reflect.Pointer || dstVal.Elem().Kind() != reflect.Slice {
-		return nil, errors.New("db: dst must be a pointer to a slice")
-	}
-
-	sliceVal := dstVal.Elem()
-	elemType := sliceVal.Type().Elem()
-	isPointer := elemType.Kind() == reflect.Pointer
-	if isPointer {
-		elemType = elemType.Elem()
-	}
-
-	var keys []Key
-	for rows.Next() {
-		var id string
-		var data []byte
-		if err := rows.Scan(&id, &data); err != nil {
-			return nil, err
-		}
-
-		elem := reflect.New(elemType)
-		if err := json.Unmarshal(data, elem.Interface()); err != nil {
-			return nil, err
-		}
-
-		if isPointer {
-			sliceVal = reflect.Append(sliceVal, elem)
-		} else {
-			sliceVal = reflect.Append(sliceVal, elem.Elem())
-		}
-
-		keys = append(keys, &sqliteKey{
-			kind: q.kind, stringID: id, namespace: q.db.config.Namespace,
-		})
-	}
-
-	dstVal.Elem().Set(sliceVal)
-	return keys, rows.Err()
+	return readEntities(rows, q.kind, q.db.config.Namespace, dst)
 }
 
 func (q *sqliteQuery) First(ctx context.Context, dst any) (Key, error) {
@@ -1031,7 +986,7 @@ func (q *sqliteQuery) First(ctx context.Context, dst any) (Key, error) {
 		return nil, err
 	}
 
-	return &sqliteKey{
+	return &sqlKey{
 		kind: q.kind, stringID: id, namespace: q.db.config.Namespace,
 	}, nil
 }
@@ -1118,7 +1073,7 @@ func (q *sqliteQuery) Keys(ctx context.Context) ([]Key, error) {
 		if err := rows.Scan(&id); err != nil {
 			return nil, err
 		}
-		keys = append(keys, &sqliteKey{
+		keys = append(keys, &sqlKey{
 			kind: q.kind, stringID: id, namespace: q.db.config.Namespace,
 		})
 	}
@@ -1136,7 +1091,7 @@ func (q *sqliteQuery) Run(ctx context.Context) Iterator {
 		rows, err = q.db.readDB.QueryContext(ctx, query, args...)
 	}
 
-	return &sqliteIterator{
+	return &sqlIterator{
 		rows: rows, err: err, kind: q.kind, namespace: q.db.config.Namespace,
 	}
 }
@@ -1286,8 +1241,8 @@ func (q *sqliteQuery) clone() *sqliteQuery {
 	return &newQ
 }
 
-// sqliteIterator implements Iterator.
-type sqliteIterator struct {
+// sqlIterator implements Iterator.
+type sqlIterator struct {
 	rows      *sql.Rows
 	err       error
 	kind      string
@@ -1295,7 +1250,7 @@ type sqliteIterator struct {
 	offset    int
 }
 
-func (it *sqliteIterator) Next(dst any) (Key, error) {
+func (it *sqlIterator) Next(dst any) (Key, error) {
 	if it.err != nil {
 		return nil, it.err
 	}
@@ -1324,16 +1279,16 @@ func (it *sqliteIterator) Next(dst any) (Key, error) {
 	// (integer keys are stored as their decimal string representation in SQLite).
 	// This ensures downstream hashid encoding works correctly.
 	if intID, err := strconv.ParseInt(id, 10, 64); err == nil && intID > 0 {
-		return &sqliteKey{
+		return &sqlKey{
 			kind: it.kind, intID: intID, namespace: it.namespace,
 		}, nil
 	}
-	return &sqliteKey{
+	return &sqlKey{
 		kind: it.kind, stringID: id, namespace: it.namespace,
 	}, nil
 }
 
-func (it *sqliteIterator) Cursor() (Cursor, error) {
+func (it *sqlIterator) Cursor() (Cursor, error) {
 	if it.rows == nil {
 		return nil, errors.New("db: iterator not initialized")
 	}

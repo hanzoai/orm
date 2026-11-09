@@ -271,7 +271,7 @@ func openWriter(path string, deferred bool) (*SQLiteDB, error) {
 		return nil, err
 	}
 	conn.SetMaxOpenConns(1)
-	return AdaptSQLDB(conn)
+	return adaptSQLite(conn)
 }
 
 func seedCounter(t *testing.T, path string) {

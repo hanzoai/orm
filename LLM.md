@@ -40,7 +40,9 @@ orm/
 ├── cache_noop.go       No-op cache
 ├── db/                 Concrete database drivers
 │   ├── db.go           DB/Key/Query/Iterator/Transaction/Cursor/Datastore interfaces
-│   ├── sqlite.go       SQLite driver (WAL, JSON storage, json_extract filters, sqlite-vec)
+│   ├── sqlite.go       SQLite driver (WAL, JSON storage, json_extract filters, sqlite-vec); AdaptSQLDB, which reads the engine off a *sql.DB
+│   ├── postgres.go     PostgreSQL driver over a caller-owned pgx pool: the same `_entities` table, `->>` filters, jsonb
+│   ├── entities.go     rows of (id, data) → records, shared by both
 │   ├── query.go        ParseFilterString, NormalizeOp, ToJSONFieldName, GenerateID
 │   ├── model.go        db.Model base type (non-generic, with hooks and CRUD lifecycle)
 │   ├── zap.go          ZAP binary protocol driver (native: SQL/DocumentDB/KV/Datastore)
@@ -110,6 +112,57 @@ typed and raw paths, with `Namespaces` still deciding when the file is open
   written `+expr`. There are no statistics, so the query picks the index, not
   the planner. No index on `deleted`: it led every unindexed statement across
   every kind.
+
+### PostgreSQL JSON Storage — the same table over a pool the caller owns
+
+`orm.AdaptSQL(conn)` (`db.AdaptSQLDB`) layers the record model over a `*sql.DB` the
+caller opened: an encrypted SQLite file, or a PostgreSQL schema (cloud's `OrgDB` /
+`sqlpool.Org` under `CLOUD_SQL_DSN`). **The engine is read off the pool's driver,
+never configured**: a pgx pool is `PostgresDB`, anything else `SQLiteDB`. One
+constructor, because a store that is handed a pool has no business knowing which
+engine the deployment chose, and two public constructors (`AdaptSQLite` and a
+`AdaptPostgres`) would make every caller branch on exactly that. The driver is matched
+by its type's package path and name, not by importing pgx: importing it into `db`
+would charge every consumer of the package for a driver it may never open (39
+packages), the same reason the analytics plane is its own package. `AdaptSQLite` is
+gone; the one name is `AdaptSQL`. Close is a no-op on both: the pool is the caller's.
+
+- Table (made in the schema the pool is on, in ONE transaction under the schema's
+  advisory migrate lock, so replicas opening one store together do not run DDL against
+  each other; an index is asked for in `pg_indexes` before it is made, since CREATE
+  INDEX locks out writers even to find itself there):
+  `_entities(id TEXT COLLATE "C" PK, kind, parent_id, data JSONB, created_at/updated_at
+  TIMESTAMPTZ, deleted BOOLEAN)`. `"C"` so a key-order walk (`After`) and cursors are
+  ranges over the id's bytes, as on SQLite, whatever the database's locale.
+- Statements are `$n`, `INSERT ... ON CONFLICT ... RETURNING`, `NOT deleted`; a put
+  makes its row live and `CreateIfAbsent` resurrects a same-kind tombstone, exactly the
+  rules of the SQLite statements.
+- Filters read the document as SQLite's `json_extract` does: text as `data->>'f'`
+  (a range by bytes, `COLLATE "C"`), a number as a number (`jsonb_typeof = 'number'`
+  guard, so a record holding words in that field contributes nothing and does not fail
+  the statement), `true`/`false` as the booleans a document holds, `false` and `0` also
+  match a record that never had the field, `nil` is absence (`IS NULL`). Order is the
+  jsonb value (a number by value; text by the database's collation), a missing value
+  first ascending. `Sum`/`Avg` count the numbers only (SQLite's COUNT also counts words;
+  this is the documented behaviour). Dotted fields are `data#>>'{a,b}'`.
+- **Transactions**: by default READ COMMITTED holding the store's write lock
+  (`pg_advisory_xact_lock(hashtextextended(current_schema() || ':write', 0))`, the same
+  lock as cloud's `Dialect.BeginWrite`, so a store that mixes orm records and raw SQL is
+  serialized as the file was): writers of one store take turns, nothing is refused,
+  nothing retries. `ReadOnly` takes no lock. `IsolationRepeatableRead` / `Serializable`
+  take PostgreSQL's own with no lock, and 40001/40P01 come back as
+  `ErrSerializationFailure`.
+- `orm:"index"` is the partial expression index of zap.go (`idx_<kind>_<path>` on
+  `(data->>'path') WHERE kind = '<kind>' AND deleted = false`), made under the migrate
+  lock; the last equality on an indexed text field drives, the others are written
+  `(expr || '') = $n` so the planner uses the selective one.
+- jsonb refuses `\u0000` (SQLSTATE 22P05): a NUL in a string field is an error naming it.
+  A caller that takes text from users rejects NUL at its boundary. jsonb also renormalises
+  the document (key order, spacing of a `json.RawMessage`), which SQLite's text does not.
+- No vector search (both methods return an error). Tests: `db/engines_test.go` runs
+  the entity behaviours on both engines (`engines(t, ...)`), `pgtest.Start()` finds a
+  PostgreSQL binary (PATH, `pg_config`, `/usr/lib/postgresql/*/bin`); with none, the
+  PostgreSQL legs skip and say so by name.
 
 ### Conditional Insert — `CreateIfAbsent` (race-safe CAS)
 - `CreateIfAbsent(ctx, key, src) (created bool, err error)` on both interface
@@ -600,7 +653,7 @@ duplicative, and all three should survive:
 
 | entry point | answers |
 |---|---|
-| `orm.AdaptSQLite(*sql.DB)` | *who owns the file* — caller opened it (pragma'd, encrypted, single-writer); orm manages records inside it |
+| `orm.AdaptSQL(*sql.DB)` | *who owns the file* — caller opened it (pragma'd, encrypted, single-writer); orm manages records inside it |
 | `query.NewQuery(db, exec, sql)` | *this statement is not expressible* |
 | `query.DB.DB() *sql.DB` | *this is not a query* — replication, PITR, backup, VFS |
 

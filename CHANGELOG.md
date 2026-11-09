@@ -5,6 +5,23 @@ All notable changes to `github.com/hanzoai/orm` are documented here.
 The format is loosely [Keep a Changelog](https://keepachangelog.com/) and
 versioning follows [SemVer](https://semver.org/).
 
+## v0.6.45
+
+### Added
+
+- **The record model on PostgreSQL.** `orm.AdaptSQL(conn)` (and
+  `db.AdaptSQLDB`) reads the engine off the `*sql.DB` it is handed: a pgx pool gets
+  `db.PostgresDB`, the same `_entities` document table with `->>` filters, jsonb,
+  `$n` placeholders, `ON CONFLICT ... RETURNING`, the migration in one transaction
+  under the schema's advisory lock, transactions that take the store's write lock, and
+  `orm:"index"` as a partial expression index. The pool, its schema and its Close stay
+  the caller's.
+
+### Changed
+
+- `orm.AdaptSQLite` is `orm.AdaptSQL`, and `db.AdaptSQLDB` returns `db.DB`. One
+  constructor for both engines; SQLite's behaviour is unchanged.
+
 ## v0.6.38
 
 ### Added

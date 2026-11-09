@@ -9,9 +9,9 @@ import (
 	_ "github.com/hanzoai/sqlite"
 )
 
-// TestAdaptSQLite_RootWrapsConn: the root orm.DB works over a caller-owned *sql.DB,
+// TestAdaptSQL_RootWrapsConn: the root orm.DB works over a caller-owned *sql.DB,
 // and closing it leaves the caller's connection open (borrow, not own).
-func TestAdaptSQLite_RootWrapsConn(t *testing.T) {
+func TestAdaptSQL_RootWrapsConn(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "root.db")
 	conn, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -20,9 +20,9 @@ func TestAdaptSQLite_RootWrapsConn(t *testing.T) {
 	conn.SetMaxOpenConns(1)
 	defer func() { _ = conn.Close() }()
 
-	db, err := AdaptSQLite(conn)
+	db, err := AdaptSQL(conn)
 	if err != nil {
-		t.Fatalf("AdaptSQLite: %v", err)
+		t.Fatalf("AdaptSQL: %v", err)
 	}
 	ctx := context.Background()
 	created, err := db.CreateIfAbsent(ctx, db.NewKey("k", "1", 0, nil), map[string]any{"v": 1})
@@ -33,12 +33,12 @@ func TestAdaptSQLite_RootWrapsConn(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := conn.PingContext(ctx); err != nil {
-		t.Fatalf("AdaptSQLite Close closed the caller's conn: %v", err)
+		t.Fatalf("AdaptSQL Close closed the caller's conn: %v", err)
 	}
 }
 
-func TestAdaptSQLite_NilConn(t *testing.T) {
-	if _, err := AdaptSQLite(nil); err == nil {
-		t.Fatal("AdaptSQLite(nil) = nil error, want error")
+func TestAdaptSQL_NilConn(t *testing.T) {
+	if _, err := AdaptSQL(nil); err == nil {
+		t.Fatal("AdaptSQL(nil) = nil error, want error")
 	}
 }
