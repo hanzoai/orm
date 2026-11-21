@@ -2,6 +2,8 @@
 
 # orm
 
+[![Open in Hanzo](https://hanzo.app/badges/open-in-hanzo.svg)](https://hanzo.app/dev/open?repo=github.com/hanzoai/orm&ref=main&action=open) [![Edit with Hanzo](https://hanzo.app/badges/edit-with-hanzo.svg)](https://hanzo.app/dev/open?repo=github.com/hanzoai/orm&ref=main&action=edit) [![Deploy with Hanzo](https://hanzo.app/badges/deploy-with-hanzo.svg)](https://hanzo.app/dev/open?repo=github.com/hanzoai/orm&ref=main&action=deploy)
+
 Generics-based ORM for Go with type-safe `Model[T]`, auto-registration, auto-serialization, and multi-backend support.
 
 ```go
